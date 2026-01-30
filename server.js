@@ -11,7 +11,7 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY
 
 const TRAKT_CLIENT_ID = '9cf5e07c0fa71537ded08bd2c9a672f2d8ab209be584db531c0d82535027bb13';
 const TRAKT_CLIENT_SECRET = 'f91521782bf59a7a5c78634821254673b16a62f599ba9f8aa17ba3040a47114c';
-const BASE_URL = 'https://mariowaru-traktv.hf.space';
+const BASE_URL = process.env.BASE_URL || 'http://localhost:7860';
 const REDIRECT_URI = `${BASE_URL}/auth/callback`;
 
 console.log('\n🐱💜 Trakt Ultimate v8.1 - STABLE - Starting...\n');
