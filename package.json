@@ -1,7 +1,7 @@
 {
   "name": "trakt-ultimate",
-  "version": "2.0.0",
-  "description": "Trakt Ultimate addon for Stremio with Supabase persistence",
+  "version": "8.2.0",
+  "description": "Trakt addon for Stremio",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
@@ -10,7 +10,7 @@
     "express": "^4.18.2",
     "axios": "^1.6.0",
     "cors": "^2.8.5",
-    "@supabase/supabase-js": "^2.39.0"
+    "@supabase/supabase-js": "^2.38.0"
   },
   "engines": {
     "node": ">=18.0.0"
