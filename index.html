@@ -1,0 +1,868 @@
+<!DOCTYPE html>
+<html lang="it">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Trakt Ultimate - Configuration</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+            color: #333;
+        }
+        
+        .container {
+            max-width: 1000px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 20px;
+            padding: 40px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+        }
+        
+        h1 {
+            text-align: center;
+            color: #667eea;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+        }
+        
+        .subtitle {
+            text-align: center;
+            color: #666;
+            margin-bottom: 10px;
+            font-size: 1.1em;
+        }
+        
+        .version {
+            text-align: center;
+            color: #999;
+            font-size: 0.9em;
+            margin-bottom: 30px;
+        }
+        
+        .alert {
+            padding: 15px;
+            border-radius: 10px;
+            margin-bottom: 20px;
+            display: none;
+        }
+        
+        .alert.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+            display: block;
+        }
+        
+        .alert.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+            display: block;
+        }
+        
+        .section {
+            margin-bottom: 30px;
+            padding: 25px;
+            background: #f8f9fa;
+            border-radius: 15px;
+            border-left: 4px solid #667eea;
+        }
+        
+        .section h2 {
+            color: #667eea;
+            margin-bottom: 20px;
+            font-size: 1.5em;
+        }
+        
+        .section h3 {
+            color: #555;
+            margin: 20px 0 15px 0;
+            font-size: 1.2em;
+            border-bottom: 2px solid #667eea;
+            padding-bottom: 10px;
+        }
+        
+        .form-group {
+            margin-bottom: 20px;
+        }
+        
+        label {
+            display: block;
+            margin-bottom: 8px;
+            font-weight: 600;
+            color: #555;
+            font-size: 0.95em;
+        }
+        
+        input[type="text"],
+        select,
+        textarea {
+            width: 100%;
+            padding: 12px 15px;
+            border: 2px solid #ddd;
+            border-radius: 8px;
+            font-size: 1em;
+            transition: border-color 0.3s;
+            font-family: inherit;
+        }
+        
+        input[type="text"]:focus,
+        select:focus,
+        textarea:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+        
+        textarea {
+            resize: vertical;
+            min-height: 100px;
+            font-family: 'Courier New', monospace;
+        }
+        
+        .button-group {
+            display: flex;
+            gap: 10px;
+            flex-wrap: wrap;
+            margin-top: 20px;
+        }
+        
+        button {
+            padding: 12px 24px;
+            border: none;
+            border-radius: 8px;
+            font-size: 1em;
+            font-weight: 600;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+        
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+        
+        .btn-primary:disabled {
+            opacity: 0.6;
+            cursor: not-allowed;
+            transform: none;
+        }
+        
+        .btn-secondary {
+            background: #e9ecef;
+            color: #333;
+        }
+        
+        .btn-secondary:hover {
+            background: #dee2e6;
+        }
+        
+        .btn-danger {
+            background: #dc3545;
+            color: white;
+        }
+        
+        .btn-danger:hover {
+            background: #c82333;
+        }
+        
+        .list-item {
+            background: white;
+            padding: 15px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border: 1px solid #ddd;
+            transition: all 0.2s;
+        }
+        
+        .list-item:hover {
+            border-color: #667eea;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.08);
+        }
+        
+        .list-item-info {
+            flex: 1;
+        }
+        
+        .list-item-name {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 5px;
+        }
+        
+        .list-item-detail {
+            font-size: 0.9em;
+            color: #666;
+        }
+        
+        .list-item-actions {
+            display: flex;
+            gap: 8px;
+        }
+        
+        .list-item-actions button {
+            padding: 8px 12px;
+            font-size: 0.9em;
+        }
+        
+        .empty-state {
+            text-align: center;
+            padding: 40px 20px;
+            color: #999;
+        }
+        
+        .empty-state-icon {
+            font-size: 3em;
+            margin-bottom: 10px;
+        }
+        
+        .info-box {
+            background: #e7f3ff;
+            border: 1px solid #b3d9ff;
+            border-radius: 8px;
+            padding: 15px;
+            margin-bottom: 20px;
+            color: #004085;
+        }
+        
+        .tabs {
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            border-bottom: 2px solid #e9ecef;
+            overflow-x: auto;
+        }
+        
+        .tab-btn {
+            padding: 12px 20px;
+            background: none;
+            border: none;
+            border-bottom: 3px solid transparent;
+            cursor: pointer;
+            font-weight: 600;
+            color: #999;
+            transition: all 0.3s;
+            white-space: nowrap;
+        }
+        
+        .tab-btn.active {
+            color: #667eea;
+            border-bottom-color: #667eea;
+        }
+        
+        .tab-content {
+            display: none;
+        }
+        
+        .tab-content.active {
+            display: block;
+        }
+        
+        .manifest-url {
+            background: #f5f5f5;
+            padding: 15px;
+            border-radius: 8px;
+            word-break: break-all;
+            font-family: 'Courier New', monospace;
+            font-size: 0.9em;
+            margin: 10px 0;
+            border: 1px solid #ddd;
+        }
+        
+        .loading {
+            display: inline-block;
+            width: 20px;
+            height: 20px;
+            border: 3px solid rgba(102, 126, 234, 0.3);
+            border-radius: 50%;
+            border-top-color: #667eea;
+            animation: spin 0.8s linear infinite;
+        }
+        
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🐱💜 Trakt Ultimate</h1>
+        <div class="subtitle">Your custom Trakt lists in Stremio</div>
+        <div class="version">v8.1 STABLE - Fast • Italian Metadata • Recommended Lists</div>
+        
+        <div id="alerts"></div>
+        
+        <div class="tabs">
+            <button class="tab-btn active" onclick="switchTab('auth')">🔐 Login</button>
+            <button class="tab-btn" onclick="switchTab('lists')">📋 My Lists</button>
+            <button class="tab-btn" onclick="switchTab('settings')">⚙️ Settings</button>
+            <button class="tab-btn" onclick="switchTab('addon')">🔗 Install</button>
+        </div>
+        
+        <!-- TAB 1: LOGIN -->
+        <div id="auth" class="tab-content active">
+            <div class="section">
+                <h2>🔐 Login to Trakt</h2>
+                
+                <div class="form-group">
+                    <label for="username">Your Trakt Username:</label>
+                    <input type="text" id="username" placeholder="example: mariowaru">
+                </div>
+                
+                <div id="auth-status" style="display: none;">
+                    <div class="info-box">
+                        <strong>✅ You're logged in!</strong><br>
+                        <span id="auth-username"></span>
+                    </div>
+                    <div class="button-group">
+                        <button class="btn-danger" onclick="resetAuth()">🔄 Reset Login</button>
+                        <button class="btn-secondary" onclick="logout()">🚪 Logout</button>
+                    </div>
+                </div>
+                
+                <div id="auth-form">
+                    <div class="info-box">
+                        <strong>ℹ️ How it works:</strong><br>
+                        1. Enter your Trakt username<br>
+                        2. Click "Login with Trakt"<br>
+                        3. Authorize the app<br>
+                        4. You'll be redirected back here
+                    </div>
+                    
+                    <div class="button-group">
+                        <button class="btn-primary" onclick="authenticateTrakt()">
+                            🔓 Login with Trakt
+                        </button>
+                        <button class="btn-secondary" onclick="loadConfig()">
+                            ↻ Load My Config
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- TAB 2: MY LISTS -->
+        <div id="lists" class="tab-content">
+            <div class="section">
+                <h2>📋 Manage Your Lists</h2>
+                
+                <div id="lists-empty" class="empty-state">
+                    <div class="empty-state-icon">📭</div>
+                    <p>Login first to manage your lists</p>
+                </div>
+                
+                <div id="lists-container" style="display: none;">
+                    <h3>Add Trakt List</h3>
+                    <div class="form-group">
+                        <label for="listUsername">Trakt Username:</label>
+                        <input type="text" id="listUsername" placeholder="example: justin">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label for="listSlug">List Slug:</label>
+                        <input type="text" id="listSlug" placeholder="example: trending">
+                    </div>
+                    
+                    <div class="button-group">
+                        <button class="btn-primary" onclick="addCustomList()">➕ Add List</button>
+                    </div>
+                    
+                    <h3 style="margin-top: 30px;">Your Lists</h3>
+                    <div id="selected-lists"></div>
+                    
+                    <div class="info-box" style="margin-top: 20px;">
+                        <strong>💡 How to find list info:</strong><br>
+                        Go to any Trakt list URL like: <code>https://trakt.tv/users/justin/lists/trending</code><br>
+                        • Username: <strong>justin</strong><br>
+                        • Slug: <strong>trending</strong>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <!-- TAB 3: SETTINGS -->
+        <div id="settings" class="tab-content">
+            <div class="section">
+                <h2>⚙️ Settings</h2>
+                
+                <h3>Poster Quality</h3>
+                <div class="form-group">
+                    <label for="posterType">Choose poster source:</label>
+                    <select id="posterType" onchange="updateSetting('posterType', this.value)">
+                        <option value="tmdb">TMDB (Default - Free)</option>
+                        <option value="rpdb">Rating Poster DB (Premium)</option>
+                    </select>
+                </div>
+                
+                <h3>TMDB API Key (Optional)</h3>
+                <div class="form-group">
+                    <label for="tmdbApiKey">Your TMDB API Key:</label>
+                    <input type="text" id="tmdbApiKey" placeholder="Leave empty to use default">
+                    <small style="color: #999; display: block; margin-top: 5px;">
+                        Get your free key at <a href="https://www.themoviedb.org/settings/api" target="_blank">TMDB</a>
+                    </small>
+                </div>
+                
+                <h3>RPDB API Key (Optional)</h3>
+                <div class="form-group">
+                    <label for="rpdbApiKey">Your RPDB API Key:</label>
+                    <input type="text" id="rpdbApiKey" placeholder="Only if using RPDB posters">
+                </div>
+                
+                <h3>Sort Order</h3>
+                <div class="form-group">
+                    <label for="sortBy">Sort catalog items by:</label>
+                    <select id="sortBy" onchange="updateSetting('sortBy', this.value)">
+                        <option value="default">Default (Trakt Order)</option>
+                        <option value="rating">Rating (Highest First)</option>
+                        <option value="year">Year (Newest First)</option>
+                        <option value="name">Name (A-Z)</option>
+                    </select>
+                </div>
+                
+                <div class="button-group">
+                    <button class="btn-primary" onclick="saveConfig()">
+                        💾 Save Settings
+                    </button>
+                </div>
+                
+                <h3 style="margin-top: 30px;">Backup & Restore</h3>
+                <div class="button-group">
+                    <button class="btn-secondary" onclick="exportConfig()">
+                        📥 Export Config
+                    </button>
+                </div>
+                
+                <div class="form-group" style="margin-top: 20px;">
+                    <textarea id="importText" placeholder="Paste exported config here to restore..."></textarea>
+                </div>
+                <div class="button-group">
+                    <button class="btn-secondary" onclick="importConfig()">
+                        📤 Import Config
+                    </button>
+                </div>
+            </div>
+        </div>
+        
+        <!-- TAB 4: INSTALL ADDON -->
+        <div id="addon" class="tab-content">
+            <div class="section">
+                <h2>🔗 Install Addon in Stremio</h2>
+                
+                <div id="addon-empty" class="empty-state">
+                    <div class="empty-state-icon">🔒</div>
+                    <p>Login first to get your installation URL</p>
+                </div>
+                
+                <div id="addon-container" style="display: none;">
+                    <div class="info-box">
+                        <strong>📋 How to install:</strong><br>
+                        1. Copy the URL below<br>
+                        2. Open Stremio<br>
+                        3. Go to Settings → Addons<br>
+                        4. Paste the URL and click Install
+                    </div>
+                    
+                    <div class="manifest-url" id="manifestUrl"></div>
+                    
+                    <div class="button-group">
+                        <button class="btn-primary" onclick="copyToClipboard('manifestUrl')">
+                            📋 Copy URL
+                        </button>
+                        <button class="btn-secondary" onclick="openInStremio()">
+                            🎬 Open in Stremio
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <script>
+        const BASE_URL = window.location.origin;
+        let currentUser = null;
+        let userConfig = {
+            username: '',
+            customLists: [],
+            posterType: 'tmdb',
+            tmdbApiKey: '',
+            rpdbApiKey: '',
+            sortBy: 'default'
+        };
+        
+        document.addEventListener('DOMContentLoaded', () => {
+            checkAuthFromURL();
+            loadConfig();
+        });
+        
+        function switchTab(tabName) {
+            document.querySelectorAll('.tab-content').forEach(el => el.classList.remove('active'));
+            document.querySelectorAll('.tab-btn').forEach(el => el.classList.remove('active'));
+            
+            document.getElementById(tabName).classList.add('active');
+            event.target.classList.add('active');
+        }
+        
+        function showAlert(message, type = 'success') {
+            const alerts = document.getElementById('alerts');
+            const alert = document.createElement('div');
+            alert.className = `alert ${type}`;
+            alert.textContent = message;
+            alerts.appendChild(alert);
+            
+            setTimeout(() => alert.remove(), 5000);
+        }
+        
+        function checkAuthFromURL() {
+            const params = new URLSearchParams(window.location.search);
+            
+            if (params.get('success')) {
+                const username = params.get('username');
+                currentUser = username;
+                showAlert(`✅ Successfully logged in as ${username}!`, 'success');
+                updateUIAfterAuth();
+                window.history.replaceState({}, document.title, window.location.pathname);
+            }
+            
+            if (params.get('error')) {
+                showAlert(`❌ Login error: ${params.get('error')}`, 'error');
+                window.history.replaceState({}, document.title, window.location.pathname);
+            }
+        }
+        
+        function authenticateTrakt() {
+            const username = document.getElementById('username').value.trim();
+            
+            if (!username) {
+                showAlert('❌ Please enter your Trakt username', 'error');
+                return;
+            }
+            
+            currentUser = username;
+            window.location.href = `${BASE_URL}/auth/trakt`;
+        }
+        
+        async function loadConfig() {
+            const username = document.getElementById('username').value.trim();
+            
+            if (!username) {
+                if (currentUser) {
+                    document.getElementById('username').value = currentUser;
+                    return await loadConfig();
+                }
+                return;
+            }
+            
+            try {
+                const response = await fetch(`${BASE_URL}/api/load-config?username=${encodeURIComponent(username)}`);
+                
+                if (response.ok) {
+                    const config = await response.json();
+                    currentUser = username;
+                    
+                    userConfig = {
+                        username: config.username,
+                        customLists: config.custom_lists || [],
+                        posterType: config.poster_type || 'tmdb',
+                        tmdbApiKey: config.tmdb_api_key || '',
+                        rpdbApiKey: config.rpdb_api_key || '',
+                        sortBy: config.sort_by || 'default'
+                    };
+                    
+                    document.getElementById('posterType').value = userConfig.posterType;
+                    document.getElementById('tmdbApiKey').value = userConfig.tmdbApiKey;
+                    document.getElementById('rpdbApiKey').value = userConfig.rpdbApiKey;
+                    document.getElementById('sortBy').value = userConfig.sortBy;
+                    
+                    if (config.trakt_token) {
+                        updateUIAfterAuth();
+                    }
+                }
+            } catch (error) {
+                console.error('Load error:', error);
+            }
+        }
+        
+        function updateUIAfterAuth() {
+            const isAuth = currentUser && userConfig.customLists !== undefined;
+            
+            document.getElementById('auth-form').style.display = isAuth ? 'none' : 'block';
+            document.getElementById('auth-status').style.display = isAuth ? 'block' : 'none';
+            
+            if (isAuth) {
+                document.getElementById('auth-username').textContent = `Logged in as: ${currentUser}`;
+                
+                document.getElementById('lists-empty').style.display = 'none';
+                document.getElementById('lists-container').style.display = 'block';
+                
+                document.getElementById('addon-empty').style.display = 'none';
+                document.getElementById('addon-container').style.display = 'block';
+                
+                updateListsUI();
+                generateManifestURL();
+            }
+        }
+        
+        async function resetAuth() {
+            if (!confirm('Reset authentication? You\'ll need to login again.')) return;
+            
+            try {
+                const response = await fetch(`${BASE_URL}/reset-auth/${currentUser}`);
+                
+                if (response.ok) {
+                    logout();
+                    showAlert('✅ Authentication reset. Please login again.', 'success');
+                }
+            } catch (error) {
+                showAlert(`❌ Error: ${error.message}`, 'error');
+            }
+        }
+        
+        function logout() {
+            currentUser = null;
+            userConfig = { username: '', customLists: [], posterType: 'tmdb', tmdbApiKey: '', rpdbApiKey: '', sortBy: 'default' };
+            document.getElementById('username').value = '';
+            
+            document.getElementById('auth-form').style.display = 'block';
+            document.getElementById('auth-status').style.display = 'none';
+            document.getElementById('lists-container').style.display = 'none';
+            document.getElementById('lists-empty').style.display = 'block';
+            document.getElementById('addon-container').style.display = 'none';
+            document.getElementById('addon-empty').style.display = 'block';
+            
+            showAlert('✅ Logged out', 'success');
+        }
+        
+        function addCustomList() {
+            const username = document.getElementById('listUsername').value.trim();
+            const slug = document.getElementById('listSlug').value.trim();
+            
+            if (!username || !slug) {
+                showAlert('❌ Please fill in both username and slug', 'error');
+                return;
+            }
+            
+            const listId = `${username}-${slug}`;
+            
+            if (userConfig.customLists.some(l => l.id === listId)) {
+                showAlert('⚠️ List already added', 'error');
+                return;
+            }
+            
+            fetch(`https://api.trakt.tv/users/${username}/lists/${slug}?extended=full`, {
+                headers: {
+                    'Content-Type': 'application/json',
+                    'trakt-api-version': '2',
+                    'trakt-api-key': '9cf5e07c0fa71537ded08bd2c9a672f2d8ab209be584db531c0d82535027bb13'
+                }
+            })
+            .then(r => r.json())
+            .then(data => {
+                const listObj = {
+                    id: listId,
+                    name: data.name,
+                    username: username,
+                    slug: slug,
+                    customName: data.name,
+                    totalItems: data.item_count || 0
+                };
+                
+                userConfig.customLists.push(listObj);
+                updateListsUI();
+                saveConfig();
+                
+                document.getElementById('listUsername').value = '';
+                document.getElementById('listSlug').value = '';
+                
+                showAlert(`✅ Added "${data.name}" (${data.item_count} items)`, 'success');
+            })
+            .catch(() => {
+                showAlert('❌ Could not find that list. Check username and slug.', 'error');
+            });
+        }
+        
+        function updateListsUI() {
+            const selected = document.getElementById('selected-lists');
+            
+            selected.innerHTML = '';
+            
+            if (userConfig.customLists.length === 0) {
+                selected.innerHTML = '<div class="empty-state"><p>No lists yet. Add one above!</p></div>';
+                return;
+            }
+            
+            userConfig.customLists.forEach(list => {
+                const item = document.createElement('div');
+                item.className = 'list-item';
+                item.innerHTML = `
+                    <div class="list-item-info">
+                        <div class="list-item-name">${list.customName || list.name}</div>
+                        <div class="list-item-detail">${list.username}/${list.slug} • ${list.totalItems || 0} items</div>
+                    </div>
+                    <div class="list-item-actions">
+                        <button class="btn-secondary" onclick="editListName('${list.id}')">✏️ Rename</button>
+                        <button class="btn-danger" onclick="removeList('${list.id}')">🗑️ Remove</button>
+                    </div>
+                `;
+                selected.appendChild(item);
+            });
+        }
+        
+        function editListName(listId) {
+            const list = userConfig.customLists.find(l => l.id === listId);
+            if (!list) return;
+            
+            const newName = prompt('Enter custom name for this list:', list.customName || list.name);
+            if (newName && newName.trim()) {
+                list.customName = newName.trim();
+                updateListsUI();
+                saveConfig();
+                showAlert('✅ List renamed', 'success');
+            }
+        }
+        
+        function removeList(listId) {
+            if (confirm('Remove this list from your addon?')) {
+                userConfig.customLists = userConfig.customLists.filter(l => l.id !== listId);
+                updateListsUI();
+                saveConfig();
+                showAlert('✅ List removed', 'success');
+            }
+        }
+        
+        function updateSetting(key, value) {
+            userConfig[key] = value;
+        }
+        
+        async function saveConfig() {
+            if (!currentUser) {
+                showAlert('❌ Please login first', 'error');
+                return;
+            }
+            
+            userConfig.tmdbApiKey = document.getElementById('tmdbApiKey').value.trim();
+            userConfig.rpdbApiKey = document.getElementById('rpdbApiKey').value.trim();
+            
+            try {
+                const response = await fetch(`${BASE_URL}/api/save-config`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        username: currentUser,
+                        customLists: userConfig.customLists,
+                        posterType: userConfig.posterType,
+                        tmdbApiKey: userConfig.tmdbApiKey,
+                        rpdbApiKey: userConfig.rpdbApiKey,
+                        sortBy: userConfig.sortBy
+                    })
+                });
+                
+                if (response.ok) {
+                    showAlert('✅ Settings saved successfully', 'success');
+                    generateManifestURL();
+                } else {
+                    showAlert('❌ Failed to save settings', 'error');
+                }
+            } catch (error) {
+                showAlert(`❌ Error: ${error.message}`, 'error');
+            }
+        }
+        
+        function exportConfig() {
+            if (!currentUser) {
+                showAlert('❌ No configuration to export', 'error');
+                return;
+            }
+            
+            const dataStr = JSON.stringify(userConfig, null, 2);
+            const dataBlob = new Blob([dataStr], { type: 'application/json' });
+            const url = URL.createObjectURL(dataBlob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `trakt-ultimate-${currentUser}-${new Date().toISOString().split('T')[0]}.json`;
+            link.click();
+            URL.revokeObjectURL(url);
+            
+            showAlert('✅ Configuration exported', 'success');
+        }
+        
+        function importConfig() {
+            const text = document.getElementById('importText').value.trim();
+            
+            if (!text) {
+                showAlert('❌ Please paste a configuration first', 'error');
+                return;
+            }
+            
+            try {
+                const imported = JSON.parse(text);
+                
+                userConfig = {
+                    username: imported.username || currentUser,
+                    customLists: imported.customLists || [],
+                    posterType: imported.posterType || 'tmdb',
+                    tmdbApiKey: imported.tmdbApiKey || '',
+                    rpdbApiKey: imported.rpdbApiKey || '',
+                    sortBy: imported.sortBy || 'default'
+                };
+                
+                document.getElementById('posterType').value = userConfig.posterType;
+                document.getElementById('tmdbApiKey').value = userConfig.tmdbApiKey;
+                document.getElementById('rpdbApiKey').value = userConfig.rpdbApiKey;
+                document.getElementById('sortBy').value = userConfig.sortBy;
+                
+                updateListsUI();
+                saveConfig();
+                document.getElementById('importText').value = '';
+                
+                showAlert('✅ Configuration imported successfully', 'success');
+            } catch (error) {
+                showAlert(`❌ Invalid configuration format`, 'error');
+            }
+        }
+        
+        function generateManifestURL() {
+            if (!currentUser) return;
+            
+            const config = { username: currentUser };
+            const encoded = btoa(JSON.stringify(config));
+            const url = `${BASE_URL}/${encoded}/manifest.json`;
+            document.getElementById('manifestUrl').textContent = url;
+        }
+        
+        function copyToClipboard(elementId) {
+            const element = document.getElementById(elementId);
+            const text = element.textContent;
+            
+            navigator.clipboard.writeText(text).then(() => {
+                showAlert('✅ URL copied to clipboard!', 'success');
+            }).catch(() => {
+                showAlert('❌ Failed to copy', 'error');
+            });
+        }
+        
+        function openInStremio() {
+            const url = document.getElementById('manifestUrl').textContent;
+            window.open(`stremio://${url}`, '_blank');
+        }
+    </script>
+</body>
+</html>
