@@ -11,23 +11,78 @@ const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY
 
 const TRAKT_CLIENT_ID = '9cf5e07c0fa71537ded08bd2c9a672f2d8ab209be584db531c0d82535027bb13';
 const TRAKT_CLIENT_SECRET = 'f91521782bf59a7a5c78634821254673b16a62f599ba9f8aa17ba3040a47114c';
-const BASE_URL = process.env.BASE_URL || 'http://localhost:7860';
+const BASE_URL = process.env.BASE_URL || 'http://localhost:10000';
 const REDIRECT_URI = `${BASE_URL}/auth/callback`;
 
-console.log('\n🐱💜 Trakt Ultimate v8.1 - STABLE - Starting...\n');
+console.log('\n🐱💜 Trakt Ultimate v8.3 OPTIMIZED - Starting...\n');
+console.log(`📍 Base URL: ${BASE_URL}`);
 
 app.use(cors());
 app.use(express.json());
-app.use('/configure', express.static(path.join(__dirname, 'configure')));
-app.use(express.static(path.join(__dirname)));
+app.use(express.static(__dirname));
 
-app.get('/', (req, res) => res.redirect('/configure'));
-app.get('/health', (req, res) => res.json({ status: 'ok', version: '8.1.0' }));
+// ⚡ SMART CACHE - Auto-cleanup
+class SmartCache {
+  constructor(maxSize = 20) {
+    this.cache = new Map();
+    this.maxSize = maxSize;
+  }
+  
+  get(key) {
+    return this.cache.get(key);
+  }
+  
+  set(key, value) {
+    if (this.cache.size >= this.maxSize) {
+      const firstKey = this.cache.keys().next().value;
+      this.cache.delete(firstKey);
+      console.log(`🗑️ Cache full - removed: ${firstKey}`);
+    }
+    this.cache.set(key, value);
+  }
+  
+  clear() {
+    this.cache.clear();
+  }
+  
+  get size() {
+    return this.cache.size;
+  }
+}
 
-const metaCache = new Map();
-const tmdbCache = new Map();
-const CACHE_DURATION = 10 * 60 * 1000;
+const metaCache = new SmartCache(20);
+const tmdbCache = new SmartCache(200);
+const CACHE_DURATION = 30 * 60 * 1000;
 const TMDB_CACHE_DURATION = 24 * 60 * 60 * 1000;
+
+setInterval(() => {
+  const now = Date.now();
+  let cleaned = 0;
+  
+  for (const [key, value] of metaCache.cache.entries()) {
+    if (now - value.timestamp > CACHE_DURATION) {
+      metaCache.cache.delete(key);
+      cleaned++;
+    }
+  }
+  
+  if (cleaned > 0) {
+    console.log(`🧹 Cleaned ${cleaned} expired catalogs`);
+  }
+}, 20 * 60 * 1000);
+
+app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+app.get('/configure', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
+
+app.get('/health', (req, res) => {
+  const mem = process.memoryUsage();
+  res.json({ 
+    status: 'ok', 
+    version: '8.3.0',
+    memory: `${Math.round(mem.heapUsed / 1024 / 1024)}MB / ${Math.round(mem.heapTotal / 1024 / 1024)}MB`,
+    cache: { catalogs: metaCache.size, tmdb: tmdbCache.size }
+  });
+});
 
 async function getUserConfig(username) {
   try {
@@ -72,10 +127,10 @@ async function refreshAccessToken(refreshToken) {
       redirect_uri: REDIRECT_URI,
       grant_type: 'refresh_token'
     }, { timeout: 10000 });
-    console.log('🔄 Token refreshed successfully');
+    console.log('🔄 Token refreshed');
     return response.data;
   } catch (error) {
-    console.error('❌ Token refresh failed:', error.response?.data || error.message);
+    console.error('❌ Token refresh failed');
     return null;
   }
 }
@@ -105,7 +160,6 @@ async function callTraktAPI(endpoint, config, method = 'GET', data = null, requi
     return await makeRequest(config.traktToken);
   } catch (error) {
     if (error.response?.status === 401 && config.refreshToken) {
-      console.log('🔄 Attempting token refresh...');
       const newTokens = await refreshAccessToken(config.refreshToken);
       
       if (newTokens) {
@@ -117,7 +171,6 @@ async function callTraktAPI(endpoint, config, method = 'GET', data = null, requi
     }
     
     if (error.response?.status === 401 && !requireAuth) {
-      console.log('⚠️ Trying without authentication (public list)...');
       return await makeRequest(null);
     }
     
@@ -125,10 +178,8 @@ async function callTraktAPI(endpoint, config, method = 'GET', data = null, requi
   }
 }
 
-async function getTMDBData(tmdbId, type, config) {
-  if (!tmdbId) return { imdb_id: null, poster_path: null, overview: null, title: null };
-  
-  const cacheKey = `tmdb:${type}:${tmdbId}`;
+async function getTMDBItalian(tmdbId, type, config) {
+  const cacheKey = `tmdb:it:${type}:${tmdbId}`;
   const cached = tmdbCache.get(cacheKey);
   
   if (cached && (Date.now() - cached.timestamp) < TMDB_CACHE_DURATION) {
@@ -136,22 +187,26 @@ async function getTMDBData(tmdbId, type, config) {
   }
   
   try {
-    const tmdbKey = config.tmdbApiKey || '9f6dbcbddf9565f6a0f004fca81f83ee';
     const mediaType = type === 'series' ? 'tv' : 'movie';
-    const url = `https://api.themoviedb.org/3/${mediaType}/${tmdbId}?api_key=${tmdbKey}&language=it-IT&append_to_response=external_ids`;
-    const response = await axios.get(url, { timeout: 5000 });
+    const url = `https://api.themoviedb.org/3/${mediaType}/${tmdbId}?api_key=${config.tmdbApiKey}&language=it-IT&append_to_response=external_ids`;
+    
+    const response = await axios.get(url, { 
+      timeout: 4000,
+      headers: { 'Accept-Encoding': 'gzip' }
+    });
     
     const data = {
-      imdb_id: response.data.external_ids?.imdb_id,
-      poster_path: response.data.poster_path,
+      title: response.data.title || response.data.name,
       overview: response.data.overview,
-      title: response.data.title || response.data.name
+      poster_path: response.data.poster_path,
+      imdb_id: response.data.external_ids?.imdb_id
     };
     
     tmdbCache.set(cacheKey, { data, timestamp: Date.now() });
     return data;
+    
   } catch (error) {
-    return { imdb_id: null, poster_path: null, overview: null, title: null };
+    return null;
   }
 }
 
@@ -168,74 +223,65 @@ function buildPosterUrl(imdbId, posterPath, config) {
     return `https://images.metahub.space/poster/small/${imdbId}/img`;
   }
   
-  return 'https://via.placeholder.com/500x750/8B7BB8/FFFFFF?text=Trakt';
+  return 'https://via.placeholder.com/500x750/667eea/ffffff?text=Trakt';
 }
 
-async function convertToMetas(items, config) {
+async function processBatch(items, config) {
   const promises = items.map(async (item) => {
     const content = item.show || item.movie || item;
     const type = item.show ? 'series' : 'movie';
     
-    let imdbId = content.ids?.imdb;
-    const tmdbId = content.ids?.tmdb;
     const traktId = content.ids?.trakt;
-    let posterPath = null;
-    let italianOverview = null;
-    let italianTitle = null;
-    
-    if (tmdbId) {
-      const tmdbData = await getTMDBData(tmdbId, type, config);
-      if (tmdbData.imdb_id) {
-        imdbId = tmdbData.imdb_id;
-      }
-      posterPath = tmdbData.poster_path;
-      italianOverview = tmdbData.overview;
-      italianTitle = tmdbData.title;
-    }
+    const tmdbId = content.ids?.tmdb;
+    let imdbId = content.ids?.imdb;
     
     if (!traktId) return null;
     
+    let italianTitle = content.title;
+    let italianOverview = content.overview || '';
+    let posterPath = null;
+    
+    if (tmdbId) {
+      const tmdbData = await getTMDBItalian(tmdbId, type, config);
+      if (tmdbData) {
+        italianTitle = tmdbData.title || content.title;
+        italianOverview = tmdbData.overview || content.overview || '';
+        posterPath = tmdbData.poster_path;
+        if (tmdbData.imdb_id) imdbId = tmdbData.imdb_id;
+      }
+    }
+    
     const posterUrl = buildPosterUrl(imdbId, posterPath, config);
-    const customId = `trakt:${type}:${traktId}`;
     
     return {
-      id: customId,
+      id: `trakt:${type}:${traktId}`,
       type: type,
-      name: italianTitle || content.title,
+      name: italianTitle,
       poster: posterUrl,
-      description: italianOverview || content.overview || '',
-      releaseInfo: content.year?.toString(),
+      description: italianOverview,
+      releaseInfo: content.year?.toString() || '',
       imdbRating: content.rating ? (content.rating / 10).toFixed(1) : undefined,
-      genres: content.genres,
+      genres: content.genres || [],
       imdb_id: imdbId,
       trakt_id: traktId,
-      tmdb_id: tmdbId,
-      _originalType: type
+      tmdb_id: tmdbId
     };
   });
   
-  const metas = await Promise.all(promises);
-  return metas.filter(m => m !== null);
+  const results = await Promise.allSettled(promises);
+  return results
+    .filter(r => r.status === 'fulfilled' && r.value !== null)
+    .map(r => r.value);
 }
 
 function deduplicateMetas(metas) {
   const seen = new Set();
-  const unique = [];
-  
-  for (const meta of metas) {
+  return metas.filter(meta => {
     const key = meta.trakt_id || meta.id;
-    
-    if (!seen.has(key)) {
-      seen.add(key);
-      unique.push(meta);
-    }
-  }
-  
-  if (metas.length !== unique.length) {
-    console.log(`  🔍 Deduplication: ${metas.length} → ${unique.length} items`);
-  }
-  
-  return unique;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function sortMetas(metas, sortBy) {
@@ -252,16 +298,11 @@ function sortMetas(metas, sortBy) {
 app.get('/reset-auth/:username', async (req, res) => {
   const username = req.params.username;
   
-  console.log(`🔄 Reset auth request for: ${username}`);
-  
   try {
     const user = await getUserConfig(username);
     
     if (!user) {
-      return res.status(404).json({ 
-        error: 'User not found',
-        username: username 
-      });
+      return res.status(404).json({ error: 'User not found' });
     }
     
     const { error } = await supabase
@@ -274,25 +315,21 @@ app.get('/reset-auth/:username', async (req, res) => {
       .eq('username', username);
     
     if (error) {
-      console.error(`❌ Reset failed:`, error);
       return res.status(500).json({ error: error.message });
     }
-    
-    console.log(`✅ Auth reset successful for ${username}`);
     
     res.send(`
       <!DOCTYPE html>
       <html>
       <head>
-        <title>Auth Reset - Trakt Ultimate</title>
+        <title>Auth Reset</title>
         <style>
           body {
-            font-family: Arial, sans-serif;
+            font-family: Arial;
             display: flex;
             justify-content: center;
             align-items: center;
             height: 100vh;
-            margin: 0;
             background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
             color: white;
           }
@@ -301,11 +338,7 @@ app.get('/reset-auth/:username', async (req, res) => {
             background: rgba(255,255,255,0.1);
             padding: 40px;
             border-radius: 20px;
-            backdrop-filter: blur(10px);
-            max-width: 500px;
           }
-          h1 { margin-bottom: 10px; }
-          p { margin: 20px 0; font-size: 18px; }
           .btn {
             display: inline-block;
             padding: 15px 30px;
@@ -315,25 +348,14 @@ app.get('/reset-auth/:username', async (req, res) => {
             border-radius: 30px;
             font-weight: bold;
             margin: 10px;
-            transition: transform 0.2s;
-          }
-          .btn:hover {
-            transform: scale(1.05);
-          }
-          .success {
-            font-size: 60px;
-            margin-bottom: 20px;
           }
         </style>
       </head>
       <body>
         <div class="container">
-          <div class="success">✅</div>
-          <h1>Authentication Reset!</h1>
+          <h1>✅ Authentication Reset!</h1>
           <p>User: <strong>${username}</strong></p>
-          <p>Old tokens removed. Get fresh tokens:</p>
           <a href="/auth/trakt" class="btn">🔐 Re-Authenticate</a>
-          <br>
           <a href="/configure" class="btn">⚙️ Settings</a>
         </div>
       </body>
@@ -341,7 +363,6 @@ app.get('/reset-auth/:username', async (req, res) => {
     `);
     
   } catch (err) {
-    console.error(`❌ Reset error:`, err);
     res.status(500).json({ error: err.message });
   }
 });
@@ -351,32 +372,20 @@ app.get('/:config/manifest.json', async (req, res) => {
     const configStr = Buffer.from(req.params.config, 'base64').toString('utf-8');
     const manifestConfig = JSON.parse(configStr);
     
-    console.log(`📋 Manifest request for user: ${manifestConfig.username}`);
-    
     const dbConfig = await getUserConfig(manifestConfig.username);
     
     if (!dbConfig) {
-      console.error(`❌ User not found: ${manifestConfig.username}`);
       return res.status(404).json({ error: 'User not found' });
     }
     
     const config = {
       username: dbConfig.username,
-      traktToken: dbConfig.trakt_token,
-      refreshToken: dbConfig.refresh_token,
-      tmdbApiKey: dbConfig.tmdb_api_key,
-      rpdbApiKey: dbConfig.rpdb_api_key,
-      posterType: dbConfig.poster_type,
-      customLists: dbConfig.custom_lists || [],
-      sortBy: dbConfig.sort_by
+      customLists: dbConfig.custom_lists || []
     };
-    
-    console.log(`📝 User has ${config.customLists.length} custom lists`);
     
     const catalogs = [];
     
     if (config.customLists.length === 0) {
-      console.log('⚠️ No custom lists found');
       catalogs.push({
         id: 'trakt-empty',
         name: '⚠️ Add lists in settings',
@@ -394,7 +403,7 @@ app.get('/:config/manifest.json', async (req, res) => {
     
     res.json({
       id: 'org.trakttv.ultimate',
-      version: '8.1.0',
+      version: '8.3.0',
       name: 'Trakt Ultimate',
       description: 'Your custom Trakt lists • Fast • Italiano',
       resources: [
@@ -419,7 +428,6 @@ app.get('/:config/manifest.json', async (req, res) => {
     });
     
   } catch (error) {
-    console.error('❌ Manifest error:', error);
     res.status(500).json({ error: 'Invalid configuration' });
   }
 });
@@ -438,7 +446,7 @@ app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
       username: dbConfig.username,
       traktToken: dbConfig.trakt_token,
       refreshToken: dbConfig.refresh_token,
-      tmdbApiKey: dbConfig.tmdb_api_key,
+      tmdbApiKey: dbConfig.tmdb_api_key || '9f6dbcbddf9565f6a0f004fca81f83ee',
       rpdbApiKey: dbConfig.rpdb_api_key,
       posterType: dbConfig.poster_type,
       customLists: dbConfig.custom_lists || [],
@@ -455,79 +463,68 @@ app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
     const cached = metaCache.get(cacheKey);
     
     if (cached && (Date.now() - cached.timestamp) < CACHE_DURATION) {
-      console.log(`📦 Cache HIT for ${catalogId}`);
+      console.log(`📦 Cache HIT: ${catalogId}`);
       return res.json({ metas: cached.metas });
     }
     
-    let metas = [];
     const listId = catalogId.replace(/^trakt-/, '');
     const list = config.customLists.find(l => l.id === listId);
     
-    if (list) {
-      console.log(`📥 Fetching: ${list.customName || list.name}`);
-      
-      try {
-        let endpoint;
-        let requireAuth = false;
-        let isRecommended = false;
-        
-        if (list.id === 'recommended-movies' || (list.name.toLowerCase().includes('recommended') && list.name.toLowerCase().includes('movie'))) {
-          endpoint = '/recommendations/movies?limit=100';
-          requireAuth = true;
-          isRecommended = true;
-          console.log('  📌 Recommended movies (limit 100)');
-        } else if (list.id === 'recommended-series' || (list.name.toLowerCase().includes('recommended') && (list.name.toLowerCase().includes('series') || list.name.toLowerCase().includes('show')))) {
-          endpoint = '/recommendations/shows?limit=100';
-          requireAuth = true;
-          isRecommended = true;
-          console.log('  📌 Recommended shows (limit 100)');
-        } else if (!list.username || !list.slug) {
-          console.error('  ❌ Invalid list: missing username or slug');
-          return res.json({ metas: [] });
-        } else {
-          endpoint = `/users/${list.username}/lists/${list.slug}/items`;
-          console.log('  📌 Custom list (no limit)');
-        }
-        
-        const response = await callTraktAPI(endpoint, config, 'GET', null, requireAuth);
-        
-        if (response.data && response.data.length > 0) {
-          let items;
-          
-          if (isRecommended) {
-            items = response.data.slice(0, 100);
-            console.log(`  📦 Raw items: ${response.data.length} → limited to 100`);
-          } else {
-            items = response.data;
-            console.log(`  📦 Raw items: ${items.length} (all)`);
-          }
-          
-          metas = await convertToMetas(items, config);
-          metas = deduplicateMetas(metas);
-          
-          console.log(`✅ ${metas.length} unique items (FAST with Italian metadata)`);
-        } else {
-          console.log(`⚠️ Empty response`);
-        }
-      } catch (error) {
-        console.error(`❌ Error: ${error.message}`);
-        
-        if (list.id.includes('recommended')) {
-          console.error('  💡 Tip: Use /reset-auth/YOUR_USERNAME to get fresh tokens');
-        }
-      }
-    } else {
-      console.log(`⚠️ List not found: ${listId}`);
+    if (!list) {
+      return res.json({ metas: [] });
     }
     
-    metas = sortMetas(metas, config.sortBy);
+    console.log(`📥 Loading: ${list.customName || list.name}`);
     
-    metaCache.set(cacheKey, {
-      metas,
-      timestamp: Date.now()
-    });
-    
-    res.json({ metas });
+    try {
+      let endpoint;
+      let requireAuth = false;
+      
+      if (list.id.includes('recommended')) {
+        const isMovies = list.name.toLowerCase().includes('movie');
+        endpoint = isMovies ? '/recommendations/movies?limit=100' : '/recommendations/shows?limit=100';
+        requireAuth = true;
+      } else {
+        endpoint = `/users/${list.username}/lists/${list.slug}/items`;
+      }
+      
+      const response = await callTraktAPI(endpoint, config, 'GET', null, requireAuth);
+      
+      if (!response.data || response.data.length === 0) {
+        return res.json({ metas: [] });
+      }
+      
+      console.log(`  📦 Total items: ${response.data.length} - processing...`);
+      
+      const BATCH_SIZE = 25;
+      let allMetas = [];
+      
+      for (let i = 0; i < response.data.length; i += BATCH_SIZE) {
+        const batch = response.data.slice(i, i + BATCH_SIZE);
+        const batchMetas = await processBatch(batch, config);
+        allMetas.push(...batchMetas);
+        
+        if (i + BATCH_SIZE < response.data.length) {
+          await new Promise(resolve => setTimeout(resolve, 50));
+        }
+      }
+      
+      allMetas = deduplicateMetas(allMetas);
+      allMetas = sortMetas(allMetas, config.sortBy);
+      
+      console.log(`✅ Loaded ${allMetas.length} items with Italian metadata`);
+      
+      metaCache.set(cacheKey, {
+        metas: allMetas,
+        timestamp: Date.now()
+      });
+      
+      res.json({ metas: allMetas });
+      
+    } catch (error) {
+      console.error(`❌ Error: ${error.message}`);
+      res.json({ metas: [] });
+    }
     
   } catch (error) {
     console.error('❌ Catalog error:', error.message);
@@ -540,14 +537,10 @@ app.get('/:config/meta/:type/:id.json', async (req, res) => {
     const id = req.params.id;
     const type = req.params.type;
     
-    console.log(`🔍 Meta request: ${type}/${id}`);
-    
     if (id.startsWith('trakt:')) {
       const parts = id.split(':');
       const originalType = parts[1];
       const traktId = parts[2];
-      
-      console.log(`  📌 Decoded: type=${originalType}, traktId=${traktId}`);
       
       const configStr = Buffer.from(req.params.config, 'base64').toString('utf-8');
       const manifestConfig = JSON.parse(configStr);
@@ -573,31 +566,24 @@ app.get('/:config/meta/:type/:id.json', async (req, res) => {
             const tmdbUrl = `https://api.themoviedb.org/3/${tmdbType}/${tmdbId}/external_ids?api_key=${config.tmdbApiKey}`;
             const tmdbExt = await axios.get(tmdbUrl, { timeout: 3000 });
             imdbId = tmdbExt.data.imdb_id;
-            console.log(`  🔍 Found IMDB via TMDB: ${imdbId}`);
-          } catch (err) {
-            console.log('  ⚠️ No IMDB ID found');
-          }
+          } catch (err) {}
         }
         
         if (!imdbId) {
-          console.log(`  ⚠️ No IMDB ID - using trakt ID fallback`);
           return res.json({ 
             meta: { 
-              id: `trakt:${originalType}:${traktId}`,
+              id: id,
               type: originalType, 
               name: response.data.title,
-              description: response.data.overview || 'Nessuna descrizione disponibile',
-              releaseInfo: response.data.year?.toString() || '',
-              poster: `https://via.placeholder.com/500x750/8B7BB8/FFFFFF?text=${encodeURIComponent(response.data.title)}`
+              description: response.data.overview || '',
+              releaseInfo: response.data.year?.toString() || ''
             } 
           });
         }
         
-        console.log(`  ✅ Found IMDB: ${imdbId} (type: ${originalType})`);
-        
         let posterUrl = `https://images.metahub.space/poster/medium/${imdbId}/img`;
         let italianTitle = response.data.title;
-        let italianOverview = response.data.overview || 'Nessuna descrizione disponibile';
+        let italianOverview = response.data.overview || '';
         let genresItalian = response.data.genres || [];
         
         if (tmdbId) {
@@ -623,11 +609,7 @@ app.get('/:config/meta/:type/:id.json', async (req, res) => {
             if (tmdbResponse.data.genres && tmdbResponse.data.genres.length > 0) {
               genresItalian = tmdbResponse.data.genres.map(g => g.name);
             }
-            
-            console.log(`  🇮🇹 Italian metadata loaded`);
-          } catch (err) {
-            console.log('  ⚠️ TMDB Italian metadata fetch failed');
-          }
+          } catch (err) {}
         }
         
         const meta = {
@@ -641,20 +623,15 @@ app.get('/:config/meta/:type/:id.json', async (req, res) => {
           imdbRating: response.data.rating ? (response.data.rating).toFixed(1) : undefined,
           genres: genresItalian,
           runtime: response.data.runtime ? `${response.data.runtime} min` : undefined,
-          country: response.data.country,
           language: 'it'
         };
         
         if (originalType === 'series') {
           try {
-            console.log(`  📺 Fetching episodes...`);
-            
             const seasonsEndpoint = `/shows/${traktId}/seasons?extended=full`;
             const seasonsResponse = await callTraktAPI(seasonsEndpoint, config);
             
-            if (!seasonsResponse.data || seasonsResponse.data.length === 0) {
-              console.log(`  ⚠️ No seasons found`);
-            } else {
+            if (seasonsResponse.data && seasonsResponse.data.length > 0) {
               const videos = [];
               
               for (const season of seasonsResponse.data) {
@@ -675,11 +652,8 @@ app.get('/:config/meta/:type/:id.json', async (req, res) => {
                         released: episode.first_aired || ''
                       });
                     }
-                    console.log(`  ✅ Season ${season.number}: ${episodesResponse.data.length} episodes`);
                   }
-                } catch (seasonErr) {
-                  console.log(`  ⚠️ Failed season ${season.number}`);
-                }
+                } catch (seasonErr) {}
               }
               
               if (tmdbId && videos.length > 0) {
@@ -705,53 +679,39 @@ app.get('/:config/meta/:type/:id.json', async (req, res) => {
                     } catch (err) {}
                   }
                   
-                  let translatedCount = 0;
                   videos.forEach(video => {
                     const key = `${video.season}-${video.episode}`;
                     const translation = episodesTranslations[key];
                     if (translation && translation.title) {
                       video.title = translation.title;
-                      translatedCount++;
                     }
                     if (translation && translation.overview) {
                       video.overview = translation.overview;
                     }
                   });
-                  
-                  if (translatedCount > 0) {
-                    console.log(`  🇮🇹 ${translatedCount} Italian titles applied`);
-                  }
-                } catch (err) {
-                  console.log('  ⚠️ Italian translation skipped');
-                }
+                } catch (err) {}
               }
               
               if (videos.length > 0) {
                 meta.videos = videos;
-                console.log(`  ✅ Total episodes: ${videos.length}`);
               }
             }
-          } catch (err) {
-            console.log('  ❌ Episodes fetch failed:', err.message);
-          }
+          } catch (err) {}
         }
         
-        console.log(`  ✅ Meta response: ${meta.name} (${imdbId}) [IT]`);
         return res.json({ meta });
         
       } catch (error) {
-        console.error('  ❌ Trakt lookup failed:', error.message);
         return res.json({ 
           meta: { 
             id: id, 
             type: originalType, 
-            name: 'Errore caricamento contenuto' 
+            name: 'Errore caricamento' 
           } 
         });
       }
     }
     
-    console.log('  ℹ️ Standard ID, passthrough');
     res.json({ 
       meta: { 
         id: id, 
@@ -761,7 +721,6 @@ app.get('/:config/meta/:type/:id.json', async (req, res) => {
     });
     
   } catch (error) {
-    console.error('❌ Meta error:', error.message);
     res.json({ 
       meta: { 
         id: req.params.id, 
@@ -819,11 +778,11 @@ app.get('/auth/callback', async (req, res) => {
     await saveUserConfig(config);
     metaCache.clear();
     
-    console.log(`✅ ${username} authenticated - ${config.customLists.length} lists preserved`);
+    console.log(`✅ ${username} authenticated`);
     res.redirect(`/configure?success=1&username=${username}`);
     
   } catch (error) {
-    console.error('❌ Auth error:', error.response?.data || error.message);
+    console.error('❌ Auth error:', error.message);
     res.redirect('/configure?error=auth_failed');
   }
 });
@@ -867,8 +826,8 @@ app.post('/api/save-config', async (req, res) => {
 });
 
 app.listen(PORT, () => {
-  console.log(`✅ Server ready at http://localhost:${PORT}`);
-  console.log(`🔗 Auth: ${BASE_URL}/auth/trakt`);
-  console.log(`🔄 Reset: ${BASE_URL}/reset-auth/USERNAME`);
-  console.log(`🐱💜 v8.1 - STABLE VERSION`);
+  console.log(`✅ Server ready at ${BASE_URL}`);
+  console.log(`💾 Cache: max 20 catalogs, 200 TMDB items`);
+  console.log(`🇮🇹 Italian metadata enabled`);
+  console.log(`⚡ All catalog items loaded with batch processing\n`);
 });
