@@ -3,6 +3,8 @@ const axios = require('axios');
 const cors = require('cors');
 const path = require('path');
 const { createClient } = require('@supabase/supabase-js');
+const http = require('http');
+const https = require('https');
 
 const app = express();
 const PORT = process.env.PORT || 10000;
@@ -14,14 +16,28 @@ const TRAKT_CLIENT_SECRET = 'f91521782bf59a7a5c78634821254673b16a62f599ba9f8aa17
 const BASE_URL = process.env.BASE_URL || 'http://localhost:10000';
 const REDIRECT_URI = `${BASE_URL}/auth/callback`;
 
-console.log('\n🐱💜 Trakt Ultimate v8.3 OPTIMIZED - Starting...\n');
+console.log('\n🐱💜 Trakt Ultimate v8.5 FINAL - Starting...\n');
 console.log(`📍 Base URL: ${BASE_URL}`);
 
 app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
-// ⚡ SMART CACHE - Auto-cleanup
+// ⚡ OTTIMIZZAZIONI HTTP
+http.globalAgent.maxSockets = 100;
+https.globalAgent.maxSockets = 100;
+
+const httpsAgent = new https.Agent({
+  keepAlive: true,
+  maxSockets: 50,
+  maxFreeSockets: 10,
+  timeout: 2500
+});
+
+axios.defaults.httpsAgent = httpsAgent;
+axios.defaults.timeout = 3000;
+
+// ⚡ SMART CACHE
 class SmartCache {
   constructor(maxSize = 20) {
     this.cache = new Map();
@@ -36,7 +52,7 @@ class SmartCache {
     if (this.cache.size >= this.maxSize) {
       const firstKey = this.cache.keys().next().value;
       this.cache.delete(firstKey);
-      console.log(`🗑️ Cache full - removed: ${firstKey}`);
+      console.log(`🗑️ Cache full - removed: ${firstKey.substring(0, 30)}...`);
     }
     this.cache.set(key, value);
   }
@@ -51,9 +67,9 @@ class SmartCache {
 }
 
 const metaCache = new SmartCache(20);
-const tmdbCache = new SmartCache(200);
-const CACHE_DURATION = 30 * 60 * 1000;
-const TMDB_CACHE_DURATION = 24 * 60 * 60 * 1000;
+const tmdbCache = new SmartCache(300);
+const CACHE_DURATION = 60 * 60 * 1000; // 1 ora
+const TMDB_CACHE_DURATION = 24 * 60 * 60 * 1000; // 24 ore
 
 setInterval(() => {
   const now = Date.now();
@@ -78,7 +94,7 @@ app.get('/health', (req, res) => {
   const mem = process.memoryUsage();
   res.json({ 
     status: 'ok', 
-    version: '8.3.0',
+    version: '8.5.0',
     memory: `${Math.round(mem.heapUsed / 1024 / 1024)}MB / ${Math.round(mem.heapTotal / 1024 / 1024)}MB`,
     cache: { catalogs: metaCache.size, tmdb: tmdbCache.size }
   });
@@ -178,7 +194,7 @@ async function callTraktAPI(endpoint, config, method = 'GET', data = null, requi
   }
 }
 
-async function getTMDBItalian(tmdbId, type, config) {
+async function getTMDBFastCached(tmdbId, type, config) {
   const cacheKey = `tmdb:it:${type}:${tmdbId}`;
   const cached = tmdbCache.get(cacheKey);
   
@@ -191,8 +207,11 @@ async function getTMDBItalian(tmdbId, type, config) {
     const url = `https://api.themoviedb.org/3/${mediaType}/${tmdbId}?api_key=${config.tmdbApiKey}&language=it-IT&append_to_response=external_ids`;
     
     const response = await axios.get(url, { 
-      timeout: 4000,
-      headers: { 'Accept-Encoding': 'gzip' }
+      timeout: 2500,
+      headers: { 
+        'Accept-Encoding': 'gzip, deflate',
+        'Accept': 'application/json'
+      }
     });
     
     const data = {
@@ -226,7 +245,7 @@ function buildPosterUrl(imdbId, posterPath, config) {
   return 'https://via.placeholder.com/500x750/667eea/ffffff?text=Trakt';
 }
 
-async function processBatch(items, config) {
+async function processBatchFast(items, config) {
   const promises = items.map(async (item) => {
     const content = item.show || item.movie || item;
     const type = item.show ? 'series' : 'movie';
@@ -242,7 +261,7 @@ async function processBatch(items, config) {
     let posterPath = null;
     
     if (tmdbId) {
-      const tmdbData = await getTMDBItalian(tmdbId, type, config);
+      const tmdbData = await getTMDBFastCached(tmdbId, type, config);
       if (tmdbData) {
         italianTitle = tmdbData.title || content.title;
         italianOverview = tmdbData.overview || content.overview || '';
@@ -403,7 +422,7 @@ app.get('/:config/manifest.json', async (req, res) => {
     
     res.json({
       id: 'org.trakttv.ultimate',
-      version: '8.3.0',
+      version: '8.5.0',
       name: 'Trakt Ultimate',
       description: 'Your custom Trakt lists • Fast • Italiano',
       resources: [
@@ -463,7 +482,7 @@ app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
     const cached = metaCache.get(cacheKey);
     
     if (cached && (Date.now() - cached.timestamp) < CACHE_DURATION) {
-      console.log(`📦 Cache HIT: ${catalogId}`);
+      console.log(`📦 Cache HIT: ${catalogId} (${cached.metas.length} items)`);
       return res.json({ metas: cached.metas });
     }
     
@@ -474,7 +493,8 @@ app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
       return res.json({ metas: [] });
     }
     
-    console.log(`📥 Loading: ${list.customName || list.name}`);
+    const startTime = Date.now();
+    console.log(`⚡ Loading: ${list.customName || list.name}`);
     
     try {
       let endpoint;
@@ -494,25 +514,22 @@ app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
         return res.json({ metas: [] });
       }
       
-      console.log(`  📦 Total items: ${response.data.length} - processing...`);
+      console.log(`  📦 ${response.data.length} items - processing with Italian TMDB...`);
       
-      const BATCH_SIZE = 25;
+      const BATCH_SIZE = 50;
       let allMetas = [];
       
       for (let i = 0; i < response.data.length; i += BATCH_SIZE) {
         const batch = response.data.slice(i, i + BATCH_SIZE);
-        const batchMetas = await processBatch(batch, config);
+        const batchMetas = await processBatchFast(batch, config);
         allMetas.push(...batchMetas);
-        
-        if (i + BATCH_SIZE < response.data.length) {
-          await new Promise(resolve => setTimeout(resolve, 50));
-        }
       }
       
       allMetas = deduplicateMetas(allMetas);
       allMetas = sortMetas(allMetas, config.sortBy);
       
-      console.log(`✅ Loaded ${allMetas.length} items with Italian metadata`);
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      console.log(`✅ ${allMetas.length} items loaded in ${elapsed}s`);
       
       metaCache.set(cacheKey, {
         metas: allMetas,
@@ -549,7 +566,9 @@ app.get('/:config/meta/:type/:id.json', async (req, res) => {
       const config = {
         traktToken: dbConfig?.trakt_token,
         refreshToken: dbConfig?.refresh_token,
-        tmdbApiKey: dbConfig?.tmdb_api_key || '9f6dbcbddf9565f6a0f004fca81f83ee'
+        tmdbApiKey: dbConfig?.tmdb_api_key || '9f6dbcbddf9565f6a0f004fca81f83ee',
+        rpdbApiKey: dbConfig?.rpdb_api_key,
+        posterType: dbConfig?.poster_type || 'tmdb'
       };
       
       try {
@@ -589,25 +608,40 @@ app.get('/:config/meta/:type/:id.json', async (req, res) => {
         if (tmdbId) {
           try {
             const tmdbType = originalType === 'series' ? 'tv' : 'movie';
-            const tmdbResponse = await axios.get(
-              `https://api.themoviedb.org/3/${tmdbType}/${tmdbId}?api_key=${config.tmdbApiKey}&language=it-IT`,
-              { timeout: 5000 }
-            );
+            const cacheKey = `tmdb:meta:${tmdbType}:${tmdbId}`;
+            const cached = tmdbCache.get(cacheKey);
             
-            if (tmdbResponse.data.poster_path) {
-              posterUrl = `https://image.tmdb.org/t/p/w500${tmdbResponse.data.poster_path}`;
+            let tmdbData;
+            
+            if (cached && (Date.now() - cached.timestamp) < TMDB_CACHE_DURATION) {
+              tmdbData = cached.data;
+            } else {
+              const tmdbResponse = await axios.get(
+                `https://api.themoviedb.org/3/${tmdbType}/${tmdbId}?api_key=${config.tmdbApiKey}&language=it-IT`,
+                { timeout: 5000 }
+              );
+              tmdbData = tmdbResponse.data;
+              tmdbCache.set(cacheKey, {  tmdbData, timestamp: Date.now() });
             }
             
-            if (tmdbResponse.data.title || tmdbResponse.data.name) {
-              italianTitle = tmdbResponse.data.title || tmdbResponse.data.name;
+            if (tmdbData.poster_path) {
+              if (config.posterType === 'rpdb' && config.rpdbApiKey) {
+                posterUrl = `https://api.ratingposterdb.com/${config.rpdbApiKey}/imdb/poster-default/${imdbId}.jpg`;
+              } else {
+                posterUrl = `https://image.tmdb.org/t/p/w500${tmdbData.poster_path}`;
+              }
             }
             
-            if (tmdbResponse.data.overview) {
-              italianOverview = tmdbResponse.data.overview;
+            if (tmdbData.title || tmdbData.name) {
+              italianTitle = tmdbData.title || tmdbData.name;
             }
             
-            if (tmdbResponse.data.genres && tmdbResponse.data.genres.length > 0) {
-              genresItalian = tmdbResponse.data.genres.map(g => g.name);
+            if (tmdbData.overview) {
+              italianOverview = tmdbData.overview;
+            }
+            
+            if (tmdbData.genres && tmdbData.genres.length > 0) {
+              genresItalian = tmdbData.genres.map(g => g.name);
             }
           } catch (err) {}
         }
@@ -663,20 +697,33 @@ app.get('/:config/meta/:type/:id.json', async (req, res) => {
                   for (const season of seasonsResponse.data) {
                     if (season.number === 0) continue;
                     
-                    try {
-                      const seasonUrl = `https://api.themoviedb.org/3/tv/${tmdbId}/season/${season.number}?api_key=${config.tmdbApiKey}&language=it-IT`;
-                      const seasonData = await axios.get(seasonUrl, { timeout: 3000 });
-                      
-                      if (seasonData.data.episodes) {
-                        for (const ep of seasonData.data.episodes) {
-                          const key = `${season.number}-${ep.episode_number}`;
-                          episodesTranslations[key] = {
-                            title: ep.name,
-                            overview: ep.overview
-                          };
-                        }
+                    const cacheKey = `tmdb:season:${tmdbId}:${season.number}`;
+                    const cached = tmdbCache.get(cacheKey);
+                    
+                    let seasonData;
+                    
+                    if (cached && (Date.now() - cached.timestamp) < TMDB_CACHE_DURATION) {
+                      seasonData = cached.data;
+                    } else {
+                      try {
+                        const seasonUrl = `https://api.themoviedb.org/3/tv/${tmdbId}/season/${season.number}?api_key=${config.tmdbApiKey}&language=it-IT`;
+                        const seasonResponse = await axios.get(seasonUrl, { timeout: 3000 });
+                        seasonData = seasonResponse.data;
+                        tmdbCache.set(cacheKey, {  seasonData, timestamp: Date.now() });
+                      } catch (err) {
+                        continue;
                       }
-                    } catch (err) {}
+                    }
+                    
+                    if (seasonData.episodes) {
+                      for (const ep of seasonData.episodes) {
+                        const key = `${season.number}-${ep.episode_number}`;
+                        episodesTranslations[key] = {
+                          title: ep.name,
+                          overview: ep.overview
+                        };
+                      }
+                    }
                   }
                   
                   videos.forEach(video => {
@@ -827,7 +874,8 @@ app.post('/api/save-config', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`✅ Server ready at ${BASE_URL}`);
-  console.log(`💾 Cache: max 20 catalogs, 200 TMDB items`);
-  console.log(`🇮🇹 Italian metadata enabled`);
-  console.log(`⚡ All catalog items loaded with batch processing\n`);
+  console.log(`💾 Cache: max 20 catalogs (1h), 300 TMDB items (24h)`);
+  console.log(`🇮🇹 Italian metadata enabled with fast processing`);
+  console.log(`⚡ Batch size: 50 items - Parallel TMDB calls`);
+  console.log(`🚀 v8.5 FINAL - All optimizations active\n`);
 });
