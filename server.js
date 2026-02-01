@@ -15,22 +15,22 @@ const TRAKT_CLIENT_ID = '9cf5e07c0fa71537ded08bd2c9a672f2d8ab209be584db531c0d825
 const TRAKT_CLIENT_SECRET = 'f91521782bf59a7a5c78634821254673b16a62f599ba9f8aa17ba3040a47114c';
 const BASE_URL = process.env.BASE_URL || 'http://localhost:10000';
 const REDIRECT_URI = `${BASE_URL}/auth/callback`;
+const ITEMS_PER_PAGE = 50; // ⚡ Items per pagina
 
-console.log('\n🐱💜 Trakt Ultimate v8.7 - ITALIANO IMMEDIATO - Starting...\n');
+console.log('\n🐱💜 Trakt Ultimate v8.9 - PAGINATION - Starting...\n');
 console.log(`📍 Base URL: ${BASE_URL}`);
 
 app.use(cors());
 app.use(express.json());
 app.use(express.static(__dirname));
 
-// ⚡ MASSIME CONNESSIONI PARALLELE
-http.globalAgent.maxSockets = 300;
-https.globalAgent.maxSockets = 300;
+http.globalAgent.maxSockets = 200;
+https.globalAgent.maxSockets = 200;
 
 const httpsAgent = new https.Agent({
   keepAlive: true,
-  maxSockets: 150,
-  maxFreeSockets: 30,
+  maxSockets: 100,
+  maxFreeSockets: 20,
   timeout: 1500
 });
 
@@ -41,9 +41,9 @@ app.get('/health', (req, res) => {
   const mem = process.memoryUsage();
   res.json({ 
     status: 'ok', 
-    version: '8.7.0',
+    version: '8.9.0',
     memory: `${Math.round(mem.heapUsed / 1024 / 1024)}MB`,
-    mode: 'Italian immediate - No cache'
+    mode: 'Paginated - 50 per page'
   });
 });
 
@@ -132,7 +132,6 @@ async function callTraktAPI(endpoint, config, method = 'GET', data = null, requi
   }
 }
 
-// ⚡ TMDB VELOCISSIMO - timeout 1.5s
 async function getTMDBItalian(tmdbId, type, apiKey) {
   try {
     const mediaType = type === 'series' ? 'tv' : 'movie';
@@ -169,7 +168,6 @@ function buildPosterUrl(imdbId, posterPath, config) {
   return 'https://via.placeholder.com/500x750/667eea/ffffff?text=Trakt';
 }
 
-// ⚡ BATCH ITALIANO - TUTTE CHIAMATE TMDB IN PARALLELO
 async function processBatchItalian(items, config) {
   const promises = items.map(async (item) => {
     const content = item.show || item.movie || item;
@@ -185,7 +183,6 @@ async function processBatchItalian(items, config) {
     let italianOverview = content.overview || '';
     let posterPath = null;
     
-    // ⚡ TMDB in parallelo
     if (tmdbId) {
       const tmdbData = await getTMDBItalian(tmdbId, type, config.tmdbApiKey);
       if (tmdbData) {
@@ -261,7 +258,8 @@ app.get('/:config/manifest.json', async (req, res) => {
     const catalogs = (dbConfig.custom_lists || []).map(list => ({
       id: `trakt-${list.id}`,
       name: list.customName || list.name,
-      type: 'traktultimate'
+      type: 'traktultimate',
+      extra: [{ name: 'skip', isRequired: false }] // ⚡ Abilita paginazione
     }));
     
     if (catalogs.length === 0) {
@@ -270,9 +268,9 @@ app.get('/:config/manifest.json', async (req, res) => {
     
     res.json({
       id: 'org.trakttv.ultimate',
-      version: '8.7.0',
+      version: '8.9.0',
       name: 'Trakt Ultimate',
-      description: 'Italian • Fast • No Cache',
+      description: 'Italian • Paginated • Fast',
       resources: ['catalog', { name: 'meta', types: ['movie', 'series'], idPrefixes: ['trakt:'] }],
       types: ['traktultimate'],
       catalogs: catalogs,
@@ -286,7 +284,7 @@ app.get('/:config/manifest.json', async (req, res) => {
   }
 });
 
-// ⚡ CATALOG - ITALIANO SUBITO (100 items alla volta in parallelo)
+// ⚡ CATALOG CON PAGINAZIONE
 app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
   try {
     const configStr = Buffer.from(req.params.config, 'base64').toString('utf-8');
@@ -304,6 +302,13 @@ app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
       sortBy: dbConfig.sort_by
     };
     
+    // ⚡ PARSING SKIP per paginazione
+    let skip = 0;
+    if (req.params.extra) {
+      const skipMatch = req.params.extra.match(/skip=(\d+)/);
+      if (skipMatch) skip = parseInt(skipMatch[1]);
+    }
+    
     const catalogId = req.params.id;
     if (catalogId === 'trakt-empty') return res.json({ metas: [] });
     
@@ -311,40 +316,43 @@ app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
     if (!list) return res.json({ metas: [] });
     
     const startTime = Date.now();
-    console.log(`⚡ ${list.customName || list.name}`);
+    console.log(`⚡ ${list.customName || list.name} - Page ${Math.floor(skip / ITEMS_PER_PAGE) + 1} (skip=${skip})`);
     
     let endpoint = `/users/${list.username}/lists/${list.slug}/items`;
     let requireAuth = false;
     
     if (list.id.includes('recommended')) {
+      // Recommended lists - limite API Trakt
       endpoint = list.name.toLowerCase().includes('movie') 
-        ? '/recommendations/movies?limit=100' 
-        : '/recommendations/shows?limit=100';
+        ? `/recommendations/movies?limit=${ITEMS_PER_PAGE}` 
+        : `/recommendations/shows?limit=${ITEMS_PER_PAGE}`;
       requireAuth = true;
     }
     
     const response = await callTraktAPI(endpoint, config, 'GET', null, requireAuth);
     if (!response.data || response.data.length === 0) return res.json({ metas: [] });
     
-    console.log(`  📦 ${response.data.length} items - loading Italian...`);
+    const totalItems = response.data.length;
     
-    // ⚡ BATCH DA 100 ALLA VOLTA - TUTTO IN PARALLELO
-    const BATCH_SIZE = 100;
-    let allMetas = [];
+    // ⚡ PAGINAZIONE: prendi solo 50 items dalla posizione 'skip'
+    const paginatedData = response.data.slice(skip, skip + ITEMS_PER_PAGE);
     
-    for (let i = 0; i < response.data.length; i += BATCH_SIZE) {
-      const batch = response.data.slice(i, i + BATCH_SIZE);
-      const batchMetas = await processBatchItalian(batch, config);
-      allMetas.push(...batchMetas);
+    if (paginatedData.length === 0) {
+      console.log(`  ⚠️ No more items (total: ${totalItems})`);
+      return res.json({ metas: [] });
     }
     
-    allMetas = deduplicateMetas(allMetas);
-    allMetas = sortMetas(allMetas, config.sortBy);
+    console.log(`  📦 Showing ${paginatedData.length} of ${totalItems} total`);
+    
+    // ⚡ PROCESSA 50 items in parallelo con TMDB italiano
+    let metas = await processBatchItalian(paginatedData, config);
+    metas = deduplicateMetas(metas);
+    metas = sortMetas(metas, config.sortBy);
     
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`✅ ${allMetas.length} items in ${elapsed}s`);
+    console.log(`✅ ${metas.length} items in ${elapsed}s`);
     
-    res.json({ metas: allMetas });
+    res.json({ metas });
     
   } catch (error) {
     console.error('❌', error.message);
@@ -534,7 +542,8 @@ app.post('/api/save-config', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`✅ Server ready at ${BASE_URL}`);
-  console.log(`🇮🇹 Italian metadata IMMEDIATE (no cache)`);
-  console.log(`⚡ Parallel TMDB calls - Batch 100`);
-  console.log(`🚀 v8.7 FINAL - Max speed with Italian\n`);
+  console.log(`🇮🇹 Italian metadata with pagination`);
+  console.log(`📄 ${ITEMS_PER_PAGE} items per page`);
+  console.log(`⚡ Scroll to load more`);
+  console.log(`🚀 v8.9 FINAL\n`);
 });
