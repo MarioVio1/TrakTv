@@ -3,7 +3,6 @@ const axios = require('axios');
 const cors = require('cors');
 const path = require('path');
 const { createClient } = require('@supabase/supabase-js');
-const fs = require('fs').promises;
 const http = require('http');
 const https = require('https');
 
@@ -17,12 +16,12 @@ const TRAKT_CLIENT_SECRET = 'f91521782bf59a7a5c78634821254673b16a62f599ba9f8aa17
 const BASE_URL = process.env.BASE_URL || 'http://localhost:10000';
 const REDIRECT_URI = `${BASE_URL}/auth/callback`;
 
-// CACHE IN MEMORY
+// ⚡ CACHE IN MEMORY - Durata 1 ora
 const catalogCache = new Map();
-const CACHE_DURATION = 3600000; // 1 ora
+const CACHE_DURATION = 3600000;
 
-console.log('\nTrakt Ultimate v10.0 LAZY LOADING - Starting...\n');
-console.log(`Base URL: ${BASE_URL}`);
+console.log('\n🐱💜 Trakt Ultimate v10.1 CACHED - Starting...\n');
+console.log(`📍 Base URL: ${BASE_URL}`);
 
 app.use(cors());
 app.use(express.json());
@@ -45,14 +44,14 @@ app.get('/health', (req, res) => {
   const mem = process.memoryUsage();
   res.json({ 
     status: 'ok', 
-    version: '10.0.0',
+    version: '10.1.0',
     memory: `${Math.round(mem.heapUsed / 1024 / 1024)}MB`,
-    mode: 'Lazy Loading + Cache',
+    mode: 'Full Cache (1h)',
     cached_catalogs: catalogCache.size
   });
 });
 
-// TRADUZIONE AUTOMATICA (solo quando necessario)
+// ⚡ TRADUZIONE (solo per meta dettaglio)
 async function translateToItalian(text) {
   if (!text || text.length < 3) return text;
   
@@ -62,7 +61,7 @@ async function translateToItalian(text) {
         q: text.substring(0, 500),
         langpair: 'en|it'
       },
-      timeout: 1000
+      timeout: 1500
     });
     
     if (response.data?.responseData?.translatedText) {
@@ -198,7 +197,7 @@ app.get('/reset-auth/:username', async (req, res) => {
       trakt_token: '', refresh_token: '', updated_at: new Date().toISOString()
     }).eq('username', req.params.username);
     
-    res.send(`<!DOCTYPE html><html><head><title>Reset</title><style>body{font-family:Arial;display:flex;justify-content:center;align-items:center;height:100vh;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff}.container{text-align:center;background:rgba(255,255,255,.1);padding:40px;border-radius:20px}.btn{display:inline-block;padding:15px 30px;background:#fff;color:#667eea;text-decoration:none;border-radius:30px;font-weight:bold;margin:10px}</style></head><body><div class="container"><h1>Reset!</h1><p><strong>${req.params.username}</strong></p><a href="/auth/trakt" class="btn">Login</a><a href="/configure" class="btn">Settings</a></div></body></html>`);
+    res.send(`<!DOCTYPE html><html><head><title>Reset</title><style>body{font-family:Arial;display:flex;justify-content:center;align-items:center;height:100vh;background:linear-gradient(135deg,#667eea,#764ba2);color:#fff}.container{text-align:center;background:rgba(255,255,255,.1);padding:40px;border-radius:20px}.btn{display:inline-block;padding:15px 30px;background:#fff;color:#667eea;text-decoration:none;border-radius:30px;font-weight:bold;margin:10px}</style></head><body><div class="container"><h1>✅ Reset!</h1><p><strong>${req.params.username}</strong></p><a href="/auth/trakt" class="btn">🔐 Login</a><a href="/configure" class="btn">⚙️ Settings</a></div></body></html>`);
   } catch {
     res.status(500).json({ error: 'Error' });
   }
@@ -213,20 +212,18 @@ app.get('/:config/manifest.json', async (req, res) => {
     const catalogs = (dbConfig.custom_lists || []).map(list => ({
       id: `trakt-${list.id}`,
       name: list.customName || list.name,
-      type: 'traktultimate',
-      // EXTRA IMPORTANTE per paginazione
-      extra: [{ name: 'skip', isRequired: false }]
+      type: 'traktultimate'
     }));
     
     if (catalogs.length === 0) {
-      catalogs.push({ id: 'trakt-empty', name: 'Add lists', type: 'traktultimate' });
+      catalogs.push({ id: 'trakt-empty', name: '⚠️ Add lists', type: 'traktultimate' });
     }
     
     res.json({
       id: 'org.trakttv.ultimate',
-      version: '10.0.0',
+      version: '10.1.0',
       name: 'Trakt Ultimate',
-      description: 'Instant • Lazy Loading',
+      description: 'Cached • Fast • IT translation on detail',
       resources: ['catalog', { name: 'meta', types: ['movie', 'series'], idPrefixes: ['trakt:'] }],
       types: ['traktultimate'],
       catalogs: catalogs,
@@ -240,22 +237,7 @@ app.get('/:config/manifest.json', async (req, res) => {
   }
 });
 
-// FUNZIONE PER FETCH ALL CON LOOP
-async function fetchAllItems(baseEndpoint, config, requireAuth) {
-  let items = [];
-  let page = 1;
-  const limit = 100; // Max per Trakt
-  while (true) {
-    let endpoint = `${baseEndpoint}${baseEndpoint.includes('?') ? '&' : '?'}extended=full&page=${page}&limit=${limit}`;
-    const response = await callTraktAPI(endpoint, config, 'GET', null, requireAuth);
-    items.push(...response.data);
-    if (response.data.length < limit) break;
-    page++;
-  }
-  return items;
-}
-
-// LAZY LOADING CATALOG - CARICA SOLO 30 ITEMS ALLA VOLTA
+// ⚡⚡⚡ CATALOG CON CACHE COMPLETA
 app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
   try {
     const configStr = Buffer.from(req.params.config, 'base64').toString('utf-8');
@@ -278,160 +260,230 @@ app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
     const list = config.customLists.find(l => l.id === catalogId.replace(/^trakt-/, ''));
     if (!list) return res.json({ metas: [] });
     
-    // PARSING SKIP PARAMETER
-    let skip = 0;
-    if (req.params.extra) {
-      const extraParams = req.params.extra.split('&').reduce((acc, param) => {
-        const [key, value] = param.split('=');
-        acc[key] = value;
-        return acc;
-      }, {});
-      skip = parseInt(extraParams.skip || '0');
-    }
-    
-    const ITEMS_PER_PAGE = 30;
-    
     const cacheKey = `${catalogId}-${config.username}`;
     const now = Date.now();
     
-    let baseEndpoint = `/users/${list.username}/lists/${list.slug}/items`;
+    // ⚡ CHECK CACHE
+    if (catalogCache.has(cacheKey)) {
+      const cached = catalogCache.get(cacheKey);
+      if (now - cached.timestamp < CACHE_DURATION) {
+        console.log(`⚡ CACHE HIT: ${list.customName || list.name} (${cached.metas.length} items) - INSTANT!`);
+        return res.json({ metas: cached.metas });
+      } else {
+        console.log(`♻️ Cache expired for ${list.customName || list.name} - Refreshing...`);
+      }
+    }
+    
+    // ⚡ CACHE MISS - Build cache
+    console.log(`📦 Building cache: ${list.customName || list.name}`);
+    const startTime = Date.now();
+    
+    let endpoint = `/users/${list.username}/lists/${list.slug}/items`;
     let requireAuth = false;
     
     if (list.id.includes('recommended')) {
-      baseEndpoint = list.name.toLowerCase().includes('movie') 
+      endpoint = list.name.toLowerCase().includes('movie') 
         ? '/recommendations/movies?limit=100' 
         : '/recommendations/shows?limit=100';
       requireAuth = true;
     }
     
-    // Se sortBy è default, usa vero lazy loading con paginazione Trakt
-    if (config.sortBy === 'default') {
-      console.log(`LAZY MODE: ${list.customName || list.name} - Fetching page for skip ${skip}`);
-      
-      const TRAKT_LIMIT = 100;
-      const globalSkip = skip;
-      const startPage = Math.floor(globalSkip / TRAKT_LIMIT) + 1;
-      const endOffset = globalSkip + ITEMS_PER_PAGE;
-      const endPage = Math.floor((endOffset - 1) / TRAKT_LIMIT) + 1;
-      
-      let allFetched = [];
-      
-      for (let p = startPage; p <= endPage; p++) {
-        const pageCacheKey = `${cacheKey}-page${p}`;
-        
-        let pageData;
-        if (catalogCache.has(pageCacheKey)) {
-          const cached = catalogCache.get(pageCacheKey);
-          if (now - cached.timestamp < CACHE_DURATION) {
-            pageData = cached.data;
-            console.log(`PAGE CACHE HIT: page ${p}`);
-          }
-        }
-        
-        if (!pageData) {
-          console.log(`PAGE CACHE MISS: Fetching page ${p}`);
-          let pagedEndpoint = `${baseEndpoint}${baseEndpoint.includes('?') ? '&' : '?'}extended=full&page=${p}&limit=${TRAKT_LIMIT}`;
-          const response = await callTraktAPI(pagedEndpoint, config, 'GET', null, requireAuth);
-          pageData = response.data;
-          catalogCache.set(pageCacheKey, { data: pageData, timestamp: now });
-        }
-        
-        allFetched.push(...pageData);
-      }
-      
-      const localSkip = globalSkip % TRAKT_LIMIT;
-      const paginatedItems = allFetched.slice(localSkip, localSkip + ITEMS_PER_PAGE);
-      
-      if (paginatedItems.length === 0) return res.json({ metas: [] });
-      
-      const metas = paginatedItems.map(item => {
-        const content = item.show || item.movie || item;
-        const type = item.show ? 'series' : 'movie';
-        
-        const traktId = content.ids?.trakt;
-        const imdbId = content.ids?.imdb;
-        
-        if (!traktId) return null;
-        
-        return {
-          id: `trakt:${type}:${traktId}`,
-          type: type,
-          name: content.title || 'Unknown',
-          poster: buildPosterUrl(imdbId, config),
-          description: content.overview || 'Nessuna trama disponibile',
-          releaseInfo: content.year?.toString() || '',
-          imdbRating: content.rating ? (content.rating / 10).toFixed(1) : undefined,
-          genres: content.genres || [],
-          trakt_id: traktId,
-          imdb_id: imdbId
-        };
-      }).filter(Boolean);
-      
-      return res.json({ metas });
-    } else {
-      // Modalità full fetch con cache per sort custom
-      if (catalogCache.has(cacheKey)) {
-        const cached = catalogCache.get(cacheKey);
-        if (now - cached.timestamp < CACHE_DURATION) {
-          console.log(`FULL CACHE HIT: ${list.customName || list.name} - Serving ${skip}-${skip + ITEMS_PER_PAGE}`);
-          const paginatedMetas = cached.metas.slice(skip, skip + ITEMS_PER_PAGE);
-          return res.json({ metas: paginatedMetas });
-        }
-      }
-      
-      // CACHE MISS - Fetch all
-      console.log(`FULL CACHE MISS: ${list.customName || list.name} - Building full cache...`);
-      const startTime = Date.now();
-      
-      const items = await fetchAllItems(baseEndpoint, config, requireAuth);
-      if (items.length === 0) {
-        catalogCache.set(cacheKey, { metas: [], timestamp: now });
-        return res.json({ metas: [] });
-      }
-      
-      const allMetas = items.map(item => {
-        const content = item.show || item.movie || item;
-        const type = item.show ? 'series' : 'movie';
-        
-        const traktId = content.ids?.trakt;
-        const imdbId = content.ids?.imdb;
-        
-        if (!traktId) return null;
-        
-        return {
-          id: `trakt:${type}:${traktId}`,
-          type: type,
-          name: content.title || 'Unknown',
-          poster: buildPosterUrl(imdbId, config),
-          description: content.overview || 'Nessuna trama disponibile',
-          releaseInfo: content.year?.toString() || '',
-          imdbRating: content.rating ? (content.rating / 10).toFixed(1) : undefined,
-          genres: content.genres || [],
-          trakt_id: traktId,
-          imdb_id: imdbId
-        };
-      }).filter(Boolean);
-      
-      const deduped = deduplicateMetas(allMetas);
-      const sorted = sortMetas(deduped, config.sortBy);
-      
-      catalogCache.set(cacheKey, { metas: sorted, timestamp: now });
-      
-      console.log(`Cache built in ${(Date.now() - startTime)/1000}s - Total items: ${sorted.length}`);
-      
-      const paginatedMetas = sorted.slice(skip, skip + ITEMS_PER_PAGE);
-      return res.json({ metas: paginatedMetas });
+    const response = await callTraktAPI(endpoint, config, 'GET', null, requireAuth);
+    if (!response.data || response.data.length === 0) {
+      catalogCache.set(cacheKey, { metas: [], timestamp: now });
+      return res.json({ metas: [] });
     }
+    
+    const totalItems = response.data.length;
+    console.log(`  Processing ${totalItems} items...`);
+    
+    // ⚡ PROCESSA VELOCE - NO TRADUZIONE QUI (solo nel meta)
+    const allMetas = response.data.map(item => {
+      const content = item.show || item.movie || item;
+      const type = item.show ? 'series' : 'movie';
+      
+      const traktId = content.ids?.trakt;
+      const imdbId = content.ids?.imdb;
+      
+      if (!traktId) return null;
+      
+      return {
+        id: `trakt:${type}:${traktId}`,
+        type: type,
+        name: content.title || 'Unknown',
+        poster: buildPosterUrl(imdbId, config),
+        description: content.overview || '', // ⚡ Inglese veloce
+        releaseInfo: content.year?.toString() || '',
+        imdbRating: content.rating ? (content.rating / 10).toFixed(1) : undefined,
+        genres: content.genres || [],
+        imdb_id: imdbId,
+        trakt_id: traktId
+      };
+    }).filter(Boolean);
+    
+    const sortedMetas = sortMetas(deduplicateMetas(allMetas), config.sortBy);
+    
+    // ⚡ SALVA IN CACHE (1 ora)
+    catalogCache.set(cacheKey, {
+      metas: sortedMetas,
+      timestamp: now
+    });
+    
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log(`✅ Cached ${sortedMetas.length} items in ${elapsed}s (valid 1h)`);
+    
+    res.json({ metas: sortedMetas });
+    
   } catch (error) {
-    console.error('Error:', error.message);
-    res.status(500).json({ metas: [] });
+    console.error('❌', error.message);
+    res.json({ metas: [] });
   }
 });
 
-// AGGIUNGI QUI ALTRI ENDPOINT SE PRESENTI NEL CODICE ORIGINALE (ES. META DETAILS, AUTH ECC.)
-// Ad esempio, se c'è un endpoint per meta, aggiungilo qui.
+// ⚡ META - QUI TRADUCI IN ITALIANO
+app.get('/:config/meta/:type/:id.json', async (req, res) => {
+  try {
+    const id = req.params.id;
+    if (!id.startsWith('trakt:')) {
+      return res.json({ meta: { id, type: req.params.type, name: 'Contenuto' } });
+    }
+    
+    const [, originalType, traktId] = id.split(':');
+    const configStr = Buffer.from(req.params.config, 'base64').toString('utf-8');
+    const dbConfig = await getUserConfig(JSON.parse(configStr).username);
+    
+    const config = {
+      traktToken: dbConfig?.trakt_token,
+      refreshToken: dbConfig?.refresh_token,
+      rpdbApiKey: dbConfig?.rpdb_api_key,
+      posterType: dbConfig?.poster_type || 'tmdb'
+    };
+    
+    const mediaType = originalType === 'series' ? 'shows' : 'movies';
+    const response = await callTraktAPI(`/${mediaType}/${traktId}?extended=full`, config);
+    
+    const imdbId = response.data.ids?.imdb;
+    
+    if (!imdbId) {
+      const translatedDesc = await translateToItalian(response.data.overview || '');
+      return res.json({ 
+        meta: { 
+          id, 
+          type: originalType, 
+          name: response.data.title, 
+          description: translatedDesc 
+        } 
+      });
+    }
+    
+    // ⚡ TRADUCI SOLO QUI (quando l'utente apre il dettaglio)
+    const italianOverview = await translateToItalian(response.data.overview || '');
+    
+    const meta = {
+      id: imdbId,
+      type: originalType,
+      name: response.data.title,
+      poster: buildPosterUrl(imdbId, config),
+      background: buildPosterUrl(imdbId, config),
+      description: italianOverview, // ⚡ Italiano!
+      releaseInfo: response.data.year?.toString() || '',
+      imdbRating: response.data.rating ? response.data.rating.toFixed(1) : undefined,
+      genres: response.data.genres || [],
+      runtime: response.data.runtime ? `${response.data.runtime} min` : undefined,
+      language: 'it'
+    };
+    
+    if (originalType === 'series') {
+      try {
+        const seasonsResp = await callTraktAPI(`/shows/${traktId}/seasons?extended=full`, config);
+        const videos = [];
+        
+        for (const season of seasonsResp.data || []) {
+          if (season.number === 0) continue;
+          try {
+            const epsResp = await callTraktAPI(`/shows/${traktId}/seasons/${season.number}/episodes?extended=full`, config);
+            for (const ep of epsResp.data || []) {
+              videos.push({
+                id: `${imdbId}:${season.number}:${ep.number}`,
+                title: ep.title || `Episodio ${ep.number}`,
+                season: season.number,
+                episode: ep.number,
+                overview: ep.overview || '',
+                released: ep.first_aired || ''
+              });
+            }
+          } catch {}
+        }
+        
+        if (videos.length > 0) meta.videos = videos;
+      } catch {}
+    }
+    
+    res.json({ meta });
+  } catch {
+    res.json({ meta: { id: req.params.id, type: req.params.type, name: 'Errore' } });
+  }
+});
 
-// START SERVER
+app.get('/auth/trakt', (req, res) => {
+  const state = Buffer.from(JSON.stringify({ timestamp: Date.now() })).toString('base64');
+  res.redirect(`https://trakt.tv/oauth/authorize?client_id=${TRAKT_CLIENT_ID}&redirect_uri=${encodeURIComponent(REDIRECT_URI)}&response_type=code&state=${state}`);
+});
+
+app.get('/auth/callback', async (req, res) => {
+  const { code, error } = req.query;
+  if (error) return res.redirect(`/configure?error=${error}`);
+  if (!code) return res.redirect(`/configure?error=missing_code`);
+  
+  try {
+    const tokenResp = await axios.post('https://api.trakt.tv/oauth/token', {
+      code, client_id: TRAKT_CLIENT_ID, client_secret: TRAKT_CLIENT_SECRET,
+      redirect_uri: REDIRECT_URI, grant_type: 'authorization_code'
+    });
+    
+    const userResp = await axios.get('https://api.trakt.tv/users/me', {
+      headers: { 'trakt-api-version': '2', 'trakt-api-key': TRAKT_CLIENT_ID, 'Authorization': `Bearer ${tokenResp.data.access_token}` }
+    });
+    
+    const username = userResp.data.username;
+    const existing = await getUserConfig(username);
+    
+    await saveUserConfig({
+      username,
+      traktToken: tokenResp.data.access_token,
+      refreshToken: tokenResp.data.refresh_token,
+      tmdbApiKey: existing?.tmdb_api_key || '',
+      rpdbApiKey: existing?.rpdb_api_key || '',
+      posterType: existing?.poster_type || 'tmdb',
+      customLists: existing?.custom_lists || [],
+      sortBy: existing?.sort_by || 'default'
+    });
+    
+    res.redirect(`/configure?success=1&username=${username}`);
+  } catch {
+    res.redirect('/configure?error=auth_failed');
+  }
+});
+
+app.get('/api/load-config', async (req, res) => {
+  const config = await getUserConfig(req.query.username);
+  config ? res.json(config) : res.status(404).json({ error: 'Not found' });
+});
+
+app.post('/api/save-config', async (req, res) => {
+  const saved = await saveUserConfig(req.body);
+  saved ? res.json({ success: true }) : res.status(500).json({ error: 'Failed' });
+});
+
+app.get('/api/clear-cache', (req, res) => {
+  catalogCache.clear();
+  res.json({ success: true, message: 'Cache cleared', info: 'All catalogs will reload on next request' });
+});
+
 app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
+  console.log(`✅ Server ready at ${BASE_URL}`);
+  console.log(`💾 CACHE: Full catalog for 1 hour`);
+  console.log(`⚡ SPEED: First load 1-3s, then INSTANT!`);
+  console.log(`🇮🇹 Translation: Only in detail view`);
+  console.log(`🚀 v10.1 FULL CACHED\n`);
 });
