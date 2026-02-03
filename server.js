@@ -20,7 +20,7 @@ const REDIRECT_URI = `${BASE_URL}/auth/callback`;
 const catalogCache = new Map();
 const CACHE_DURATION = 3600000;
 
-console.log('\n🐱💜 Trakt Ultimate v10.1 CACHED - Starting...\n');
+console.log('\n🐱💜 Trakt Ultimate v10.2 CACHED + IT POSTERS - Starting...\n');
 console.log(`📍 Base URL: ${BASE_URL}`);
 
 app.use(cors());
@@ -44,38 +44,43 @@ app.get('/health', (req, res) => {
   const mem = process.memoryUsage();
   res.json({ 
     status: 'ok', 
-    version: '10.1.0',
+    version: '10.2.0',
     memory: `${Math.round(mem.heapUsed / 1024 / 1024)}MB`,
-    mode: 'Full Cache (1h)',
+    mode: 'Cache + IT Posters',
     cached_catalogs: catalogCache.size
   });
 });
 
-// ⚡ TRADUZIONE (solo per meta dettaglio)
-async function translateToItalian(text) {
-  if (!text || text.length < 3) return text;
-  
+// ⚡ TMDB POSTER ITALIANO
+async function getTMDBData(tmdbId, type, apiKey) {
   try {
-    const response = await axios.get('https://api.mymemory.translated.net/get', {
-      params: {
-        q: text.substring(0, 500),
-        langpair: 'en|it'
-      },
-      timeout: 1500
-    });
+    const mediaType = type === 'series' ? 'tv' : 'movie';
+    const response = await axios.get(
+      `https://api.themoviedb.org/3/${mediaType}/${tmdbId}?api_key=${apiKey}&language=it-IT`,
+      { 
+        timeout: 1500,
+        httpsAgent
+      }
+    );
     
-    if (response.data?.responseData?.translatedText) {
-      return response.data.responseData.translatedText;
-    }
-    return text;
+    return {
+      poster_path: response.data.poster_path,
+      backdrop_path: response.data.backdrop_path,
+      overview: response.data.overview,
+      title: response.data.title || response.data.name,
+      imdb_id: response.data.imdb_id
+    };
   } catch {
-    return text;
+    return null;
   }
 }
 
-function buildPosterUrl(imdbId, config) {
+function buildPosterUrl(posterPath, imdbId, config) {
   if (config.posterType === 'rpdb' && config.rpdbApiKey && imdbId) {
     return `https://api.ratingposterdb.com/${config.rpdbApiKey}/imdb/poster-default/${imdbId}.jpg`;
+  }
+  if (posterPath) {
+    return `https://image.tmdb.org/t/p/w500${posterPath}`;
   }
   if (imdbId) {
     return `https://images.metahub.space/poster/small/${imdbId}/img`;
@@ -221,9 +226,9 @@ app.get('/:config/manifest.json', async (req, res) => {
     
     res.json({
       id: 'org.trakttv.ultimate',
-      version: '10.1.0',
+      version: '10.2.0',
       name: 'Trakt Ultimate',
-      description: 'Cached • Fast • IT translation on detail',
+      description: 'Cached • IT Posters • Fast',
       resources: ['catalog', { name: 'meta', types: ['movie', 'series'], idPrefixes: ['trakt:'] }],
       types: ['traktultimate'],
       catalogs: catalogs,
@@ -237,7 +242,7 @@ app.get('/:config/manifest.json', async (req, res) => {
   }
 });
 
-// ⚡⚡⚡ CATALOG CON CACHE COMPLETA
+// ⚡⚡⚡ CATALOG CON CACHE + TMDB POSTER ITALIANO
 app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
   try {
     const configStr = Buffer.from(req.params.config, 'base64').toString('utf-8');
@@ -248,6 +253,7 @@ app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
       username: dbConfig.username,
       traktToken: dbConfig.trakt_token,
       refreshToken: dbConfig.refresh_token,
+      tmdbApiKey: dbConfig.tmdb_api_key || '9f6dbcbddf9565f6a0f004fca81f83ee',
       rpdbApiKey: dbConfig.rpdb_api_key,
       posterType: dbConfig.poster_type,
       customLists: dbConfig.custom_lists || [],
@@ -274,8 +280,8 @@ app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
       }
     }
     
-    // ⚡ CACHE MISS - Build cache
-    console.log(`📦 Building cache: ${list.customName || list.name}`);
+    // ⚡ CACHE MISS - Build cache CON TMDB
+    console.log(`📦 Building cache with IT posters: ${list.customName || list.name}`);
     const startTime = Date.now();
     
     let endpoint = `/users/${list.username}/lists/${list.slug}/items`;
@@ -295,31 +301,71 @@ app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
     }
     
     const totalItems = response.data.length;
-    console.log(`  Processing ${totalItems} items...`);
+    console.log(`  Processing ${totalItems} items with TMDB it-IT...`);
     
-    // ⚡ PROCESSA VELOCE - NO TRADUZIONE QUI (solo nel meta)
-    const allMetas = response.data.map(item => {
-      const content = item.show || item.movie || item;
-      const type = item.show ? 'series' : 'movie';
+    // ⚡ BATCH DI 30 CON TMDB ITALIANO
+    const BATCH_SIZE = 30;
+    let allMetas = [];
+    
+    for (let i = 0; i < response.data.length; i += BATCH_SIZE) {
+      const batch = response.data.slice(i, i + BATCH_SIZE);
+      const batchNum = Math.floor(i / BATCH_SIZE) + 1;
+      const totalBatches = Math.ceil(totalItems / BATCH_SIZE);
       
-      const traktId = content.ids?.trakt;
-      const imdbId = content.ids?.imdb;
+      console.log(`  ⚡ Batch ${batchNum}/${totalBatches}...`);
       
-      if (!traktId) return null;
+      const batchPromises = batch.map(async (item) => {
+        const content = item.show || item.movie || item;
+        const type = item.show ? 'series' : 'movie';
+        
+        const traktId = content.ids?.trakt;
+        const tmdbId = content.ids?.tmdb;
+        let imdbId = content.ids?.imdb;
+        
+        if (!traktId) return null;
+        
+        let posterPath = null;
+        let italianTitle = content.title;
+        let italianOverview = content.overview || '';
+        
+        // ⚡ TMDB CON LINGUA ITALIANA
+        if (tmdbId) {
+          const tmdbData = await getTMDBData(tmdbId, type, config.tmdbApiKey);
+          if (tmdbData) {
+            posterPath = tmdbData.poster_path;
+            if (tmdbData.imdb_id) imdbId = tmdbData.imdb_id;
+            if (tmdbData.title) italianTitle = tmdbData.title;
+            if (tmdbData.overview) italianOverview = tmdbData.overview;
+          }
+        }
+        
+        return {
+          id: `trakt:${type}:${traktId}`,
+          type: type,
+          name: italianTitle,
+          poster: buildPosterUrl(posterPath, imdbId, config),
+          description: italianOverview, // ⚡ Già in italiano da TMDB!
+          releaseInfo: content.year?.toString() || '',
+          imdbRating: content.rating ? (content.rating / 10).toFixed(1) : undefined,
+          genres: content.genres || [],
+          imdb_id: imdbId,
+          trakt_id: traktId,
+          tmdb_id: tmdbId
+        };
+      });
       
-      return {
-        id: `trakt:${type}:${traktId}`,
-        type: type,
-        name: content.title || 'Unknown',
-        poster: buildPosterUrl(imdbId, config),
-        description: content.overview || '', // ⚡ Inglese veloce
-        releaseInfo: content.year?.toString() || '',
-        imdbRating: content.rating ? (content.rating / 10).toFixed(1) : undefined,
-        genres: content.genres || [],
-        imdb_id: imdbId,
-        trakt_id: traktId
-      };
-    }).filter(Boolean);
+      const batchResults = await Promise.allSettled(batchPromises);
+      const batchMetas = batchResults
+        .filter(r => r.status === 'fulfilled' && r.value !== null)
+        .map(r => r.value);
+      
+      allMetas.push(...batchMetas);
+      
+      // Piccola pausa tra batch
+      if (i + BATCH_SIZE < response.data.length) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+    }
     
     const sortedMetas = sortMetas(deduplicateMetas(allMetas), config.sortBy);
     
@@ -340,7 +386,7 @@ app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
   }
 });
 
-// ⚡ META - QUI TRADUCI IN ITALIANO
+// ⚡ META - DETTAGLIO CON TMDB ITALIANO
 app.get('/:config/meta/:type/:id.json', async (req, res) => {
   try {
     const id = req.params.id;
@@ -355,6 +401,7 @@ app.get('/:config/meta/:type/:id.json', async (req, res) => {
     const config = {
       traktToken: dbConfig?.trakt_token,
       refreshToken: dbConfig?.refresh_token,
+      tmdbApiKey: dbConfig?.tmdb_api_key || '9f6dbcbddf9565f6a0f004fca81f83ee',
       rpdbApiKey: dbConfig?.rpdb_api_key,
       posterType: dbConfig?.poster_type || 'tmdb'
     };
@@ -362,30 +409,49 @@ app.get('/:config/meta/:type/:id.json', async (req, res) => {
     const mediaType = originalType === 'series' ? 'shows' : 'movies';
     const response = await callTraktAPI(`/${mediaType}/${traktId}?extended=full`, config);
     
-    const imdbId = response.data.ids?.imdb;
+    let imdbId = response.data.ids?.imdb;
+    const tmdbId = response.data.ids?.tmdb;
+    
+    let posterPath = null;
+    let backdropPath = null;
+    let italianTitle = response.data.title;
+    let italianOverview = response.data.overview || '';
+    
+    // ⚡ TMDB ITALIANO
+    if (tmdbId) {
+      const tmdbData = await getTMDBData(tmdbId, originalType, config.tmdbApiKey);
+      if (tmdbData) {
+        posterPath = tmdbData.poster_path;
+        backdropPath = tmdbData.backdrop_path;
+        if (tmdbData.imdb_id) imdbId = tmdbData.imdb_id;
+        if (tmdbData.title) italianTitle = tmdbData.title;
+        if (tmdbData.overview) italianOverview = tmdbData.overview;
+      }
+    }
     
     if (!imdbId) {
-      const translatedDesc = await translateToItalian(response.data.overview || '');
       return res.json({ 
         meta: { 
           id, 
           type: originalType, 
-          name: response.data.title, 
-          description: translatedDesc 
+          name: italianTitle, 
+          description: italianOverview 
         } 
       });
     }
     
-    // ⚡ TRADUCI SOLO QUI (quando l'utente apre il dettaglio)
-    const italianOverview = await translateToItalian(response.data.overview || '');
+    const posterUrl = buildPosterUrl(posterPath, imdbId, config);
+    const backgroundUrl = backdropPath 
+      ? `https://image.tmdb.org/t/p/original${backdropPath}`
+      : posterUrl;
     
     const meta = {
       id: imdbId,
       type: originalType,
-      name: response.data.title,
-      poster: buildPosterUrl(imdbId, config),
-      background: buildPosterUrl(imdbId, config),
-      description: italianOverview, // ⚡ Italiano!
+      name: italianTitle,
+      poster: posterUrl,
+      background: backgroundUrl,
+      description: italianOverview, // ⚡ Italiano da TMDB!
       releaseInfo: response.data.year?.toString() || '',
       imdbRating: response.data.rating ? response.data.rating.toFixed(1) : undefined,
       genres: response.data.genres || [],
@@ -483,7 +549,7 @@ app.get('/api/clear-cache', (req, res) => {
 app.listen(PORT, () => {
   console.log(`✅ Server ready at ${BASE_URL}`);
   console.log(`💾 CACHE: Full catalog for 1 hour`);
-  console.log(`⚡ SPEED: First load 1-3s, then INSTANT!`);
-  console.log(`🇮🇹 Translation: Only in detail view`);
-  console.log(`🚀 v10.1 FULL CACHED\n`);
+  console.log(`🇮🇹 TMDB: Italian posters + descriptions (language=it-IT)`);
+  console.log(`⚡ SPEED: First load 5-10s (with TMDB), then INSTANT!`);
+  console.log(`🚀 v10.2 CACHED + IT POSTERS\n`);
 });
