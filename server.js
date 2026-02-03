@@ -3,6 +3,7 @@ const axios = require('axios');
 const cors = require('cors');
 const path = require('path');
 const { createClient } = require('@supabase/supabase-js');
+const fs = require('fs').promises;
 const http = require('http');
 const https = require('https');
 
@@ -16,7 +17,11 @@ const TRAKT_CLIENT_SECRET = 'f91521782bf59a7a5c78634821254673b16a62f599ba9f8aa17
 const BASE_URL = process.env.BASE_URL || 'http://localhost:10000';
 const REDIRECT_URI = `${BASE_URL}/auth/callback`;
 
-console.log('\n🐱💜 Trakt Ultimate v9.1 ULTRA FAST - Starting...\n');
+// ⚡ CACHE IN MEMORY
+const catalogCache = new Map();
+const CACHE_DURATION = 3600000; // 1 ora
+
+console.log('\n🐱💜 Trakt Ultimate v10.0 LAZY LOADING - Starting...\n');
 console.log(`📍 Base URL: ${BASE_URL}`);
 
 app.use(cors());
@@ -30,7 +35,7 @@ const httpsAgent = new https.Agent({
   keepAlive: true,
   maxSockets: 100,
   maxFreeSockets: 20,
-  timeout: 1500
+  timeout: 1000
 });
 
 app.get('/', (req, res) => res.sendFile(path.join(__dirname, 'index.html')));
@@ -40,11 +45,44 @@ app.get('/health', (req, res) => {
   const mem = process.memoryUsage();
   res.json({ 
     status: 'ok', 
-    version: '9.1.0',
+    version: '10.0.0',
     memory: `${Math.round(mem.heapUsed / 1024 / 1024)}MB`,
-    mode: 'Ultra fast catalog - Italian on click'
+    mode: 'Lazy Loading + Cache',
+    cached_catalogs: catalogCache.size
   });
 });
+
+// ⚡ TRADUZIONE AUTOMATICA (solo quando necessario)
+async function translateToItalian(text) {
+  if (!text || text.length < 3) return text;
+  
+  try {
+    const response = await axios.get('https://api.mymemory.translated.net/get', {
+      params: {
+        q: text.substring(0, 500),
+        langpair: 'en|it'
+      },
+      timeout: 1000
+    });
+    
+    if (response.data?.responseData?.translatedText) {
+      return response.data.responseData.translatedText;
+    }
+    return text;
+  } catch {
+    return text;
+  }
+}
+
+function buildPosterUrl(imdbId, config) {
+  if (config.posterType === 'rpdb' && config.rpdbApiKey && imdbId) {
+    return `https://api.ratingposterdb.com/${config.rpdbApiKey}/imdb/poster-default/${imdbId}.jpg`;
+  }
+  if (imdbId) {
+    return `https://images.metahub.space/poster/small/${imdbId}/img`;
+  }
+  return 'https://via.placeholder.com/500x750/667eea/ffffff?text=Trakt';
+}
 
 async function getUserConfig(username) {
   try {
@@ -175,7 +213,9 @@ app.get('/:config/manifest.json', async (req, res) => {
     const catalogs = (dbConfig.custom_lists || []).map(list => ({
       id: `trakt-${list.id}`,
       name: list.customName || list.name,
-      type: 'traktultimate'
+      type: 'traktultimate',
+      // ⚡ EXTRA IMPORTANTE per paginazione
+      extra: [{ name: 'skip', isRequired: false }]
     }));
     
     if (catalogs.length === 0) {
@@ -184,9 +224,9 @@ app.get('/:config/manifest.json', async (req, res) => {
     
     res.json({
       id: 'org.trakttv.ultimate',
-      version: '9.1.0',
+      version: '10.0.0',
       name: 'Trakt Ultimate',
-      description: 'Ultra Fast • Italian on demand',
+      description: 'Instant • Lazy Loading',
       resources: ['catalog', { name: 'meta', types: ['movie', 'series'], idPrefixes: ['trakt:'] }],
       types: ['traktultimate'],
       catalogs: catalogs,
@@ -200,7 +240,7 @@ app.get('/:config/manifest.json', async (req, res) => {
   }
 });
 
-// ⚡ CATALOG ULTRA VELOCE - SOLO TRAKT (NO TMDB)
+// ⚡⚡⚡ LAZY LOADING CATALOG - CARICA SOLO 30 ITEMS ALLA VOLTA
 app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
   try {
     const configStr = Buffer.from(req.params.config, 'base64').toString('utf-8');
@@ -211,6 +251,8 @@ app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
       username: dbConfig.username,
       traktToken: dbConfig.trakt_token,
       refreshToken: dbConfig.refresh_token,
+      rpdbApiKey: dbConfig.rpdb_api_key,
+      posterType: dbConfig.poster_type,
       customLists: dbConfig.custom_lists || [],
       sortBy: dbConfig.sort_by
     };
@@ -221,8 +263,36 @@ app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
     const list = config.customLists.find(l => l.id === catalogId.replace(/^trakt-/, ''));
     if (!list) return res.json({ metas: [] });
     
+    // ⚡ PARSING SKIP PARAMETER
+    let skip = 0;
+    if (req.params.extra) {
+      const extraParams = req.params.extra.split('&').reduce((acc, param) => {
+        const [key, value] = param.split('=');
+        acc[key] = value;
+        return acc;
+      }, {});
+      skip = parseInt(extraParams.skip || '0');
+    }
+    
+    const ITEMS_PER_PAGE = 30; // ⚡ Solo 30 alla volta!
+    
+    const cacheKey = `${catalogId}-${config.username}`;
+    const now = Date.now();
+    
+    // ⚡ CHECK CACHE
+    if (catalogCache.has(cacheKey)) {
+      const cached = catalogCache.get(cacheKey);
+      if (now - cached.timestamp < CACHE_DURATION) {
+        console.log(`⚡ CACHE HIT: ${list.customName || list.name} - Serving ${skip}-${skip + ITEMS_PER_PAGE}`);
+        
+        const paginatedMetas = cached.metas.slice(skip, skip + ITEMS_PER_PAGE);
+        return res.json({ metas: paginatedMetas });
+      }
+    }
+    
+    // ⚡ CACHE MISS - Scarica tutto e cachalo (solo prima volta)
+    console.log(`📦 CACHE MISS: ${list.customName || list.name} - Building cache...`);
     const startTime = Date.now();
-    console.log(`⚡ ${list.customName || list.name}`);
     
     let endpoint = `/users/${list.username}/lists/${list.slug}/items`;
     let requireAuth = false;
@@ -235,48 +305,49 @@ app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
     }
     
     const response = await callTraktAPI(endpoint, config, 'GET', null, requireAuth);
-    if (!response.data || response.data.length === 0) return res.json({ metas: [] });
+    if (!response.data || response.data.length === 0) {
+      catalogCache.set(cacheKey, { metas: [], timestamp: now });
+      return res.json({ metas: [] });
+    }
     
-    const totalItems = response.data.length;
-    console.log(`  📦 ${totalItems} items - converting (NO TMDB)...`);
-    
-    // ⚡ CONVERSIONE VELOCISSIMA - SOLO DATI TRAKT
-    const metas = response.data.map(item => {
+    // ⚡ PROCESSA VELOCE (senza traduzione per cache)
+    const allMetas = response.data.map(item => {
       const content = item.show || item.movie || item;
       const type = item.show ? 'series' : 'movie';
       
       const traktId = content.ids?.trakt;
       const imdbId = content.ids?.imdb;
-      const tmdbId = content.ids?.tmdb;
       
       if (!traktId) return null;
-      
-      // Poster veloce (solo IMDB)
-      const poster = imdbId 
-        ? `https://images.metahub.space/poster/small/${imdbId}/img`
-        : `https://via.placeholder.com/300x450/667eea/ffffff?text=${encodeURIComponent(content.title?.substring(0, 15) || 'N/A')}`;
       
       return {
         id: `trakt:${type}:${traktId}`,
         type: type,
         name: content.title || 'Unknown',
-        poster: poster,
-        description: content.overview || '',
+        poster: buildPosterUrl(imdbId, config),
+        description: content.overview || 'Nessuna trama disponibile',
         releaseInfo: content.year?.toString() || '',
         imdbRating: content.rating ? (content.rating / 10).toFixed(1) : undefined,
         genres: content.genres || [],
         imdb_id: imdbId,
-        trakt_id: traktId,
-        tmdb_id: tmdbId
+        trakt_id: traktId
       };
     }).filter(Boolean);
     
-    const sortedMetas = sortMetas(deduplicateMetas(metas), config.sortBy);
+    const sortedMetas = sortMetas(deduplicateMetas(allMetas), config.sortBy);
     
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(2);
-    console.log(`✅ ${sortedMetas.length} items in ${elapsed}s (${(sortedMetas.length / parseFloat(elapsed)).toFixed(0)} items/sec)`);
+    // ⚡ SALVA IN CACHE
+    catalogCache.set(cacheKey, {
+      metas: sortedMetas,
+      timestamp: now
+    });
     
-    res.json({ metas: sortedMetas });
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    console.log(`✅ Cached ${sortedMetas.length} items in ${elapsed}s`);
+    
+    // ⚡ RITORNA SOLO PRIMI 30
+    const paginatedMetas = sortedMetas.slice(skip, skip + ITEMS_PER_PAGE);
+    res.json({ metas: paginatedMetas });
     
   } catch (error) {
     console.error('❌', error.message);
@@ -284,7 +355,7 @@ app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
   }
 });
 
-// 🇮🇹 META - QUI carica TMDB ITALIANO (quando clicchi)
+// ⚡ META - TRADUCI SOLO QUANDO APRI DETTAGLIO
 app.get('/:config/meta/:type/:id.json', async (req, res) => {
   try {
     const id = req.params.id;
@@ -299,80 +370,44 @@ app.get('/:config/meta/:type/:id.json', async (req, res) => {
     const config = {
       traktToken: dbConfig?.trakt_token,
       refreshToken: dbConfig?.refresh_token,
-      tmdbApiKey: dbConfig?.tmdb_api_key || '9f6dbcbddf9565f6a0f004fca81f83ee',
       rpdbApiKey: dbConfig?.rpdb_api_key,
       posterType: dbConfig?.poster_type || 'tmdb'
     };
     
-    console.log(`🇮🇹 Loading Italian metadata for ${traktId}...`);
-    
     const mediaType = originalType === 'series' ? 'shows' : 'movies';
     const response = await callTraktAPI(`/${mediaType}/${traktId}?extended=full`, config);
     
-    let imdbId = response.data.ids?.imdb;
-    const tmdbId = response.data.ids?.tmdb;
-    
-    // Trova IMDB se mancante
-    if (!imdbId && tmdbId) {
-      try {
-        const tmdbType = originalType === 'series' ? 'tv' : 'movie';
-        const tmdbExt = await axios.get(
-          `https://api.themoviedb.org/3/${tmdbType}/${tmdbId}/external_ids?api_key=${config.tmdbApiKey}`,
-          { timeout: 2000, httpsAgent }
-        );
-        imdbId = tmdbExt.data.imdb_id;
-      } catch {}
-    }
+    const imdbId = response.data.ids?.imdb;
     
     if (!imdbId) {
-      return res.json({ meta: { id, type: originalType, name: response.data.title, description: response.data.overview || '' } });
+      const translatedDesc = await translateToItalian(response.data.overview || '');
+      return res.json({ 
+        meta: { 
+          id, 
+          type: originalType, 
+          name: response.data.title, 
+          description: translatedDesc 
+        } 
+      });
     }
     
-    let posterUrl = `https://images.metahub.space/poster/medium/${imdbId}/img`;
-    let italianTitle = response.data.title;
-    let italianOverview = response.data.overview || '';
-    let genresItalian = response.data.genres || [];
-    
-    // ⚡ TMDB ITALIANO
-    if (tmdbId) {
-      try {
-        const tmdbType = originalType === 'series' ? 'tv' : 'movie';
-        const tmdbData = await axios.get(
-          `https://api.themoviedb.org/3/${tmdbType}/${tmdbId}?api_key=${config.tmdbApiKey}&language=it-IT`,
-          { timeout: 3000, httpsAgent }
-        );
-        
-        if (tmdbData.data.poster_path) {
-          posterUrl = config.posterType === 'rpdb' && config.rpdbApiKey
-            ? `https://api.ratingposterdb.com/${config.rpdbApiKey}/imdb/poster-default/${imdbId}.jpg`
-            : `https://image.tmdb.org/t/p/w500${tmdbData.data.poster_path}`;
-        }
-        
-        italianTitle = tmdbData.data.title || tmdbData.data.name || italianTitle;
-        italianOverview = tmdbData.data.overview || italianOverview;
-        genresItalian = tmdbData.data.genres?.map(g => g.name) || genresItalian;
-        
-        console.log(`  ✅ Italian: "${italianTitle}"`);
-      } catch (err) {
-        console.log(`  ⚠️ TMDB failed, using English`);
-      }
-    }
+    // ⚡ Traduci solo quando serve (dettaglio)
+    const italianOverview = await translateToItalian(response.data.overview || '');
     
     const meta = {
       id: imdbId,
       type: originalType,
-      name: italianTitle,
-      poster: posterUrl,
-      background: posterUrl,
+      name: response.data.title,
+      poster: buildPosterUrl(imdbId, config),
+      background: buildPosterUrl(imdbId, config),
       description: italianOverview,
       releaseInfo: response.data.year?.toString() || '',
       imdbRating: response.data.rating ? response.data.rating.toFixed(1) : undefined,
-      genres: genresItalian,
+      genres: response.data.genres || [],
       runtime: response.data.runtime ? `${response.data.runtime} min` : undefined,
       language: 'it'
     };
     
-    // Serie TV - episodi italiani
     if (originalType === 'series') {
       try {
         const seasonsResp = await callTraktAPI(`/shows/${traktId}/seasons?extended=full`, config);
@@ -391,26 +426,6 @@ app.get('/:config/meta/:type/:id.json', async (req, res) => {
                 overview: ep.overview || '',
                 released: ep.first_aired || ''
               });
-            }
-          } catch {}
-        }
-        
-        // Traduci episodi in italiano
-        if (tmdbId && videos.length > 0) {
-          try {
-            for (const season of seasonsResp.data || []) {
-              if (season.number === 0) continue;
-              const seasonData = await axios.get(
-                `https://api.themoviedb.org/3/tv/${tmdbId}/season/${season.number}?api_key=${config.tmdbApiKey}&language=it-IT`,
-                { timeout: 2000, httpsAgent }
-              );
-              for (const ep of seasonData.data.episodes || []) {
-                const video = videos.find(v => v.season === season.number && v.episode === ep.episode_number);
-                if (video && ep.name) {
-                  video.title = ep.name;
-                  video.overview = ep.overview || video.overview;
-                }
-              }
             }
           } catch {}
         }
@@ -475,10 +490,16 @@ app.post('/api/save-config', async (req, res) => {
   saved ? res.json({ success: true }) : res.status(500).json({ error: 'Failed' });
 });
 
+// ⚡ CLEAR CACHE ENDPOINT (per debug)
+app.get('/api/clear-cache', (req, res) => {
+  catalogCache.clear();
+  res.json({ success: true, message: 'Cache cleared' });
+});
+
 app.listen(PORT, () => {
   console.log(`✅ Server ready at ${BASE_URL}`);
-  console.log(`⚡ ULTRA FAST catalog (Trakt only)`);
-  console.log(`🇮🇹 Italian metadata on demand (when you click)`);
-  console.log(`📊 6000+ items in <2 seconds`);
-  console.log(`🚀 v9.1 FINAL\n`);
+  console.log(`⚡ LAZY LOADING: 30 items per page`);
+  console.log(`💾 CACHE: 1 hour in-memory`);
+  console.log(`🇮🇹 Translation: Only on detail view`);
+  console.log(`🚀 v10.0 INSTANT LOAD\n`);
 });
