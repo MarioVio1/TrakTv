@@ -15,9 +15,9 @@ const TRAKT_CLIENT_ID = '9cf5e07c0fa71537ded08bd2c9a672f2d8ab209be584db531c0d825
 const TRAKT_CLIENT_SECRET = 'f91521782bf59a7a5c78634821254673b16a62f599ba9f8aa17ba3040a47114c';
 const BASE_URL = process.env.BASE_URL || 'http://localhost:10000';
 const REDIRECT_URI = `${BASE_URL}/auth/callback`;
-const ITEMS_PER_PAGE = 50; // ⚡ Items per pagina
+const BATCH_SIZE = 50; // ⚡ Processa 50 alla volta
 
-console.log('\n🐱💜 Trakt Ultimate v8.9 - PAGINATION - Starting...\n');
+console.log('\n🐱💜 Trakt Ultimate v9.0 - BATCH LOADING - Starting...\n');
 console.log(`📍 Base URL: ${BASE_URL}`);
 
 app.use(cors());
@@ -41,9 +41,9 @@ app.get('/health', (req, res) => {
   const mem = process.memoryUsage();
   res.json({ 
     status: 'ok', 
-    version: '8.9.0',
+    version: '9.0.0',
     memory: `${Math.round(mem.heapUsed / 1024 / 1024)}MB`,
-    mode: 'Paginated - 50 per page'
+    mode: 'Batch loading - All items'
   });
 });
 
@@ -168,6 +168,7 @@ function buildPosterUrl(imdbId, posterPath, config) {
   return 'https://via.placeholder.com/500x750/667eea/ffffff?text=Trakt';
 }
 
+// ⚡ PROCESSA BATCH di 50 items
 async function processBatchItalian(items, config) {
   const promises = items.map(async (item) => {
     const content = item.show || item.movie || item;
@@ -258,8 +259,7 @@ app.get('/:config/manifest.json', async (req, res) => {
     const catalogs = (dbConfig.custom_lists || []).map(list => ({
       id: `trakt-${list.id}`,
       name: list.customName || list.name,
-      type: 'traktultimate',
-      extra: [{ name: 'skip', isRequired: false }] // ⚡ Abilita paginazione
+      type: 'traktultimate'
     }));
     
     if (catalogs.length === 0) {
@@ -268,9 +268,9 @@ app.get('/:config/manifest.json', async (req, res) => {
     
     res.json({
       id: 'org.trakttv.ultimate',
-      version: '8.9.0',
+      version: '9.0.0',
       name: 'Trakt Ultimate',
-      description: 'Italian • Paginated • Fast',
+      description: 'Italian • All items • Batch loading',
       resources: ['catalog', { name: 'meta', types: ['movie', 'series'], idPrefixes: ['trakt:'] }],
       types: ['traktultimate'],
       catalogs: catalogs,
@@ -284,7 +284,7 @@ app.get('/:config/manifest.json', async (req, res) => {
   }
 });
 
-// ⚡ CATALOG CON PAGINAZIONE
+// ⚡ CATALOG - CARICA TUTTO A BATCH DI 50
 app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
   try {
     const configStr = Buffer.from(req.params.config, 'base64').toString('utf-8');
@@ -302,13 +302,6 @@ app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
       sortBy: dbConfig.sort_by
     };
     
-    // ⚡ PARSING SKIP per paginazione
-    let skip = 0;
-    if (req.params.extra) {
-      const skipMatch = req.params.extra.match(/skip=(\d+)/);
-      if (skipMatch) skip = parseInt(skipMatch[1]);
-    }
-    
     const catalogId = req.params.id;
     if (catalogId === 'trakt-empty') return res.json({ metas: [] });
     
@@ -316,16 +309,15 @@ app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
     if (!list) return res.json({ metas: [] });
     
     const startTime = Date.now();
-    console.log(`⚡ ${list.customName || list.name} - Page ${Math.floor(skip / ITEMS_PER_PAGE) + 1} (skip=${skip})`);
+    console.log(`⚡ ${list.customName || list.name}`);
     
     let endpoint = `/users/${list.username}/lists/${list.slug}/items`;
     let requireAuth = false;
     
     if (list.id.includes('recommended')) {
-      // Recommended lists - limite API Trakt
       endpoint = list.name.toLowerCase().includes('movie') 
-        ? `/recommendations/movies?limit=${ITEMS_PER_PAGE}` 
-        : `/recommendations/shows?limit=${ITEMS_PER_PAGE}`;
+        ? '/recommendations/movies?limit=100' 
+        : '/recommendations/shows?limit=100';
       requireAuth = true;
     }
     
@@ -333,26 +325,36 @@ app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
     if (!response.data || response.data.length === 0) return res.json({ metas: [] });
     
     const totalItems = response.data.length;
+    console.log(`  📦 Total: ${totalItems} items - processing in batches of ${BATCH_SIZE}...`);
     
-    // ⚡ PAGINAZIONE: prendi solo 50 items dalla posizione 'skip'
-    const paginatedData = response.data.slice(skip, skip + ITEMS_PER_PAGE);
+    // ⚡ PROCESSA TUTTI GLI ITEMS A BATCH DI 50
+    let allMetas = [];
+    let processed = 0;
     
-    if (paginatedData.length === 0) {
-      console.log(`  ⚠️ No more items (total: ${totalItems})`);
-      return res.json({ metas: [] });
+    for (let i = 0; i < response.data.length; i += BATCH_SIZE) {
+      const batch = response.data.slice(i, i + BATCH_SIZE);
+      const batchNumber = Math.floor(i / BATCH_SIZE) + 1;
+      const totalBatches = Math.ceil(totalItems / BATCH_SIZE);
+      
+      console.log(`  ⚡ Batch ${batchNumber}/${totalBatches} (${batch.length} items)...`);
+      
+      const batchMetas = await processBatchItalian(batch, config);
+      allMetas.push(...batchMetas);
+      processed += batch.length;
+      
+      // Piccola pausa tra batch per non sovraccaricare
+      if (i + BATCH_SIZE < response.data.length) {
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
     }
     
-    console.log(`  📦 Showing ${paginatedData.length} of ${totalItems} total`);
-    
-    // ⚡ PROCESSA 50 items in parallelo con TMDB italiano
-    let metas = await processBatchItalian(paginatedData, config);
-    metas = deduplicateMetas(metas);
-    metas = sortMetas(metas, config.sortBy);
+    allMetas = deduplicateMetas(allMetas);
+    allMetas = sortMetas(allMetas, config.sortBy);
     
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`✅ ${metas.length} items in ${elapsed}s`);
+    console.log(`✅ ${allMetas.length} items loaded in ${elapsed}s (avg: ${(elapsed / Math.ceil(totalItems / BATCH_SIZE)).toFixed(1)}s per batch)`);
     
-    res.json({ metas });
+    res.json({ metas: allMetas });
     
   } catch (error) {
     console.error('❌', error.message);
@@ -542,8 +544,8 @@ app.post('/api/save-config', async (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`✅ Server ready at ${BASE_URL}`);
-  console.log(`🇮🇹 Italian metadata with pagination`);
-  console.log(`📄 ${ITEMS_PER_PAGE} items per page`);
-  console.log(`⚡ Scroll to load more`);
-  console.log(`🚀 v8.9 FINAL\n`);
+  console.log(`🇮🇹 Italian metadata - ALL items`);
+  console.log(`⚡ Batch processing: ${BATCH_SIZE} items at a time`);
+  console.log(`📦 Returns complete catalog (no pagination)`);
+  console.log(`🚀 v9.0 FINAL\n`);
 });
