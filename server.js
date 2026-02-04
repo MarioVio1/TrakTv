@@ -20,7 +20,10 @@ const REDIRECT_URI = `${BASE_URL}/auth/callback`;
 const catalogCache = new Map();
 const CACHE_DURATION = 3600000;
 
-console.log('\n🐱💜 Trakt Ultimate v11.1 FAST POSTERS - Starting...\n');
+// ⚡ LIMITI PER TV
+const ITEMS_PER_PAGE = 100; // Max consigliato da Stremio
+
+console.log('\n🐱💜 Trakt Ultimate v11.2 TV OPTIMIZED - Starting...\n');
 console.log(`📍 Base URL: ${BASE_URL}`);
 
 app.use(cors());
@@ -37,20 +40,18 @@ app.get('/health', (req, res) => {
   const mem = process.memoryUsage();
   res.json({ 
     status: 'ok', 
-    version: '11.1.0',
+    version: '11.2.0',
     memory: `${Math.round(mem.heapUsed / 1024 / 1024)}MB`,
-    mode: 'Fast Posters + Cache',
+    mode: 'TV Optimized (100 items/page)',
     cached_catalogs: catalogCache.size
   });
 });
 
-// ⚡ POSTER VELOCE - MetaHub (non richiede API key)
 function buildFastPoster(imdbId, config) {
   if (config.posterType === 'rpdb' && config.rpdbApiKey && imdbId) {
     return `https://api.ratingposterdb.com/${config.rpdbApiKey}/imdb/poster-default/${imdbId}.jpg`;
   }
   if (imdbId) {
-    // MetaHub - veloce e affidabile
     return `https://images.metahub.space/poster/medium/${imdbId}/img`;
   }
   return 'https://via.placeholder.com/300x450/667eea/ffffff?text=No+Poster';
@@ -176,6 +177,7 @@ app.get('/reset-auth/:username', async (req, res) => {
   }
 });
 
+// ⚡ MANIFEST CON PAGINAZIONE
 app.get('/:config/manifest.json', async (req, res) => {
   try {
     const configStr = Buffer.from(req.params.config, 'base64').toString('utf-8');
@@ -185,18 +187,27 @@ app.get('/:config/manifest.json', async (req, res) => {
     const catalogs = (dbConfig.custom_lists || []).map(list => ({
       id: `trakt-${list.id}`,
       name: list.customName || list.name,
-      type: list.name.toLowerCase().includes('movie') ? 'movie' : 'series'
+      type: list.name.toLowerCase().includes('movie') ? 'movie' : 'series',
+      // ⚡ IMPORTANTE per paginazione!
+      extra: [
+        { name: 'skip', isRequired: false }
+      ]
     }));
     
     if (catalogs.length === 0) {
-      catalogs.push({ id: 'trakt-empty', name: '⚠️ Add lists', type: 'movie' });
+      catalogs.push({ 
+        id: 'trakt-empty', 
+        name: '⚠️ Add lists', 
+        type: 'movie',
+        extra: [{ name: 'skip', isRequired: false }]
+      });
     }
     
     res.json({
       id: 'org.trakttv.ultimate',
-      version: '11.1.0',
+      version: '11.2.0',
       name: 'Trakt Ultimate',
-      description: 'Fast Posters • Cached • AIOMetadata Ready',
+      description: 'TV Optimized • 100 items/page • Fast',
       resources: ['catalog'],
       types: ['movie', 'series'],
       catalogs: catalogs,
@@ -209,7 +220,7 @@ app.get('/:config/manifest.json', async (req, res) => {
   }
 });
 
-// ⚡⚡⚡ CATALOG VELOCE CON POSTER
+// ⚡⚡⚡ CATALOG CON PAGINAZIONE VERA + DESCRIZIONE
 app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
   try {
     const configStr = Buffer.from(req.params.config, 'base64').toString('utf-8');
@@ -232,73 +243,101 @@ app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
     const list = config.customLists.find(l => l.id === catalogId.replace(/^trakt-/, ''));
     if (!list) return res.json({ metas: [] });
     
+    // ⚡ PARSING SKIP PARAMETER
+    let skip = 0;
+    if (req.params.extra) {
+      try {
+        const extraParams = new URLSearchParams(req.params.extra.replace(/^extra=/, ''));
+        skip = parseInt(extraParams.get('skip') || '0');
+      } catch {
+        skip = 0;
+      }
+    }
+    
     const cacheKey = `${catalogId}-${config.username}`;
     const now = Date.now();
     
     // ⚡ CHECK CACHE
+    let allMetas = [];
     if (catalogCache.has(cacheKey)) {
       const cached = catalogCache.get(cacheKey);
       if (now - cached.timestamp < CACHE_DURATION) {
-        console.log(`⚡ CACHE HIT: ${list.customName || list.name} (${cached.metas.length} items) - INSTANT!`);
-        return res.json({ metas: cached.metas });
+        allMetas = cached.metas;
+        console.log(`⚡ CACHE HIT: ${list.customName || list.name} - Serving ${skip}-${skip + ITEMS_PER_PAGE}`);
       }
     }
     
     // ⚡ CACHE MISS - Build cache
-    console.log(`📦 Building cache: ${list.customName || list.name}`);
-    const startTime = Date.now();
-    
-    let endpoint = `/users/${list.username}/lists/${list.slug}/items`;
-    let requireAuth = false;
-    
-    if (list.id.includes('recommended')) {
-      endpoint = list.name.toLowerCase().includes('movie') 
-        ? '/recommendations/movies?limit=100' 
-        : '/recommendations/shows?limit=100';
-      requireAuth = true;
+    if (allMetas.length === 0) {
+      console.log(`📦 Building cache: ${list.customName || list.name}`);
+      const startTime = Date.now();
+      
+      let endpoint = `/users/${list.username}/lists/${list.slug}/items`;
+      let requireAuth = false;
+      
+      if (list.id.includes('recommended')) {
+        endpoint = list.name.toLowerCase().includes('movie') 
+          ? '/recommendations/movies?limit=100' 
+          : '/recommendations/shows?limit=100';
+        requireAuth = true;
+      }
+      
+      const response = await callTraktAPI(endpoint, config, 'GET', null, requireAuth);
+      if (!response.data || response.data.length === 0) {
+        catalogCache.set(cacheKey, { metas: [], timestamp: now });
+        return res.json({ metas: [] });
+      }
+      
+      const totalItems = response.data.length;
+      console.log(`  Processing ${totalItems} items...`);
+      
+      // ⚡ PROCESSA TUTTO con descrizione breve
+      allMetas = response.data
+        .map(item => {
+          const content = item.show || item.movie || item;
+          const type = item.show ? 'series' : 'movie';
+          const imdbId = content.ids?.imdb;
+          
+          if (!imdbId) return null;
+          
+          // ⚡ Descrizione breve (max 200 caratteri per performance TV)
+          let shortDesc = '';
+          if (content.overview) {
+            shortDesc = content.overview.length > 200 
+              ? content.overview.substring(0, 197) + '...'
+              : content.overview;
+          }
+          
+          return {
+            id: imdbId,
+            type: type,
+            name: content.title || 'Unknown',
+            poster: buildFastPoster(imdbId, config),
+            description: shortDesc, // ⚡ DIDASCALIA!
+            releaseInfo: content.year?.toString() || '',
+            imdbRating: content.rating ? (content.rating / 10).toFixed(1) : undefined,
+          };
+        })
+        .filter(Boolean);
+      
+      allMetas = sortMetas(deduplicateMetas(allMetas), config.sortBy);
+      
+      // ⚡ SALVA IN CACHE (1 ora)
+      catalogCache.set(cacheKey, {
+        metas: allMetas,
+        timestamp: now
+      });
+      
+      const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+      console.log(`✅ Cached ${allMetas.length} items in ${elapsed}s`);
     }
     
-    const response = await callTraktAPI(endpoint, config, 'GET', null, requireAuth);
-    if (!response.data || response.data.length === 0) {
-      catalogCache.set(cacheKey, { metas: [], timestamp: now });
-      return res.json({ metas: [] });
-    }
+    // ⚡ PAGINAZIONE - Max 100 items
+    const paginatedMetas = allMetas.slice(skip, skip + ITEMS_PER_PAGE);
     
-    const totalItems = response.data.length;
-    console.log(`  Processing ${totalItems} items...`);
+    console.log(`📺 TV Response: ${paginatedMetas.length} items (${skip}-${skip + ITEMS_PER_PAGE} of ${allMetas.length})`);
     
-    // ⚡ VELOCE - Solo dati base + poster MetaHub
-    const allMetas = response.data
-      .map(item => {
-        const content = item.show || item.movie || item;
-        const type = item.show ? 'series' : 'movie';
-        const imdbId = content.ids?.imdb;
-        
-        if (!imdbId) return null;
-        
-        return {
-          id: imdbId,
-          type: type,
-          name: content.title || 'Unknown',
-          poster: buildFastPoster(imdbId, config), // ⚡ MetaHub poster veloce!
-          releaseInfo: content.year?.toString() || '',
-          imdbRating: content.rating ? (content.rating / 10).toFixed(1) : undefined,
-        };
-      })
-      .filter(Boolean);
-    
-    const sortedMetas = sortMetas(deduplicateMetas(allMetas), config.sortBy);
-    
-    // ⚡ SALVA IN CACHE (1 ora)
-    catalogCache.set(cacheKey, {
-      metas: sortedMetas,
-      timestamp: now
-    });
-    
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`✅ Cached ${sortedMetas.length} items in ${elapsed}s`);
-    
-    res.json({ metas: sortedMetas });
+    res.json({ metas: paginatedMetas });
     
   } catch (error) {
     console.error('❌', error.message);
@@ -363,8 +402,9 @@ app.get('/api/clear-cache', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`✅ Server ready at ${BASE_URL}`);
-  console.log(`💾 CACHE: 1 hour`);
-  console.log(`⚡ POSTERS: MetaHub (no API key needed)`);
-  console.log(`🎨 Compatible with AIOMetadata for enhanced details`);
-  console.log(`🚀 v11.1 FAST POSTERS\n`);
+  console.log(`💾 CACHE: 1 hour in-memory`);
+  console.log(`📺 TV OPTIMIZED: 100 items per page (auto pagination)`);
+  console.log(`📝 DESCRIPTIONS: Short (200 chars) for performance`);
+  console.log(`⚡ POSTERS: MetaHub fast`);
+  console.log(`🚀 v11.2 TV OPTIMIZED\n`);
 });
