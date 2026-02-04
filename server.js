@@ -20,7 +20,7 @@ const REDIRECT_URI = `${BASE_URL}/auth/callback`;
 const catalogCache = new Map();
 const CACHE_DURATION = 3600000;
 
-console.log('\n🐱💜 Trakt Ultimate v11.0 AIOMETA COMPATIBLE - Starting...\n');
+console.log('\n🐱💜 Trakt Ultimate v11.1 FAST POSTERS - Starting...\n');
 console.log(`📍 Base URL: ${BASE_URL}`);
 
 app.use(cors());
@@ -37,12 +37,24 @@ app.get('/health', (req, res) => {
   const mem = process.memoryUsage();
   res.json({ 
     status: 'ok', 
-    version: '11.0.0',
+    version: '11.1.0',
     memory: `${Math.round(mem.heapUsed / 1024 / 1024)}MB`,
-    mode: 'AIOMetadata Compatible',
+    mode: 'Fast Posters + Cache',
     cached_catalogs: catalogCache.size
   });
 });
+
+// ⚡ POSTER VELOCE - MetaHub (non richiede API key)
+function buildFastPoster(imdbId, config) {
+  if (config.posterType === 'rpdb' && config.rpdbApiKey && imdbId) {
+    return `https://api.ratingposterdb.com/${config.rpdbApiKey}/imdb/poster-default/${imdbId}.jpg`;
+  }
+  if (imdbId) {
+    // MetaHub - veloce e affidabile
+    return `https://images.metahub.space/poster/medium/${imdbId}/img`;
+  }
+  return 'https://via.placeholder.com/300x450/667eea/ffffff?text=No+Poster';
+}
 
 async function getUserConfig(username) {
   try {
@@ -64,7 +76,7 @@ async function saveUserConfig(config) {
       refresh_token: config.refreshToken,
       tmdb_api_key: config.tmdbApiKey || '',
       rpdb_api_key: config.rpdbApiKey || '',
-      poster_type: config.posterType || 'tmdb',
+      poster_type: config.posterType || 'metahub',
       custom_lists: listsToSave,
       sort_by: config.sortBy || 'default',
       updated_at: new Date().toISOString()
@@ -164,7 +176,6 @@ app.get('/reset-auth/:username', async (req, res) => {
   }
 });
 
-// ⚡ MANIFEST - SOLO CATALOG (no meta, lo fa AIOMetadata!)
 app.get('/:config/manifest.json', async (req, res) => {
   try {
     const configStr = Buffer.from(req.params.config, 'base64').toString('utf-8');
@@ -183,10 +194,9 @@ app.get('/:config/manifest.json', async (req, res) => {
     
     res.json({
       id: 'org.trakttv.ultimate',
-      version: '11.0.0',
+      version: '11.1.0',
       name: 'Trakt Ultimate',
-      description: 'AIOMetadata Compatible • Ultra Fast • Cached',
-      // ⚡ SOLO CATALOG - AIOMetadata gestisce i meta!
+      description: 'Fast Posters • Cached • AIOMetadata Ready',
       resources: ['catalog'],
       types: ['movie', 'series'],
       catalogs: catalogs,
@@ -199,7 +209,7 @@ app.get('/:config/manifest.json', async (req, res) => {
   }
 });
 
-// ⚡⚡⚡ CATALOG ULTRA VELOCE - Solo ID IMDb (AIOMetadata fa il resto!)
+// ⚡⚡⚡ CATALOG VELOCE CON POSTER
 app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
   try {
     const configStr = Buffer.from(req.params.config, 'base64').toString('utf-8');
@@ -210,6 +220,8 @@ app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
       username: dbConfig.username,
       traktToken: dbConfig.trakt_token,
       refreshToken: dbConfig.refresh_token,
+      rpdbApiKey: dbConfig.rpdb_api_key,
+      posterType: dbConfig.poster_type || 'metahub',
       customLists: dbConfig.custom_lists || [],
       sortBy: dbConfig.sort_by
     };
@@ -232,7 +244,7 @@ app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
       }
     }
     
-    // ⚡ CACHE MISS - Build cache VELOCISSIMO
+    // ⚡ CACHE MISS - Build cache
     console.log(`📦 Building cache: ${list.customName || list.name}`);
     const startTime = Date.now();
     
@@ -253,24 +265,24 @@ app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
     }
     
     const totalItems = response.data.length;
-    console.log(`  Processing ${totalItems} items for AIOMetadata...`);
+    console.log(`  Processing ${totalItems} items...`);
     
-    // ⚡ VELOCISSIMO - Solo ID e dati base (AIOMetadata fa tutto il resto!)
+    // ⚡ VELOCE - Solo dati base + poster MetaHub
     const allMetas = response.data
       .map(item => {
         const content = item.show || item.movie || item;
         const type = item.show ? 'series' : 'movie';
         const imdbId = content.ids?.imdb;
         
-        // ⚡ IMPORTANTE: serve IMDb ID per AIOMetadata!
         if (!imdbId) return null;
         
         return {
-          id: imdbId, // ⚡ ID IMDb standard - AIOMetadata lo intercetta!
+          id: imdbId,
           type: type,
           name: content.title || 'Unknown',
+          poster: buildFastPoster(imdbId, config), // ⚡ MetaHub poster veloce!
           releaseInfo: content.year?.toString() || '',
-          // ⚡ AIOMetadata aggiungerà: poster, description, background, genres, rating, etc.
+          imdbRating: content.rating ? (content.rating / 10).toFixed(1) : undefined,
         };
       })
       .filter(Boolean);
@@ -284,7 +296,7 @@ app.get('/:config/catalog/:type/:id/:extra?.json', async (req, res) => {
     });
     
     const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-    console.log(`✅ Cached ${sortedMetas.length} items in ${elapsed}s (AIOMetadata will enrich)`);
+    console.log(`✅ Cached ${sortedMetas.length} items in ${elapsed}s`);
     
     res.json({ metas: sortedMetas });
     
@@ -323,7 +335,7 @@ app.get('/auth/callback', async (req, res) => {
       refreshToken: tokenResp.data.refresh_token,
       tmdbApiKey: existing?.tmdb_api_key || '',
       rpdbApiKey: existing?.rpdb_api_key || '',
-      posterType: existing?.poster_type || 'tmdb',
+      posterType: existing?.poster_type || 'metahub',
       customLists: existing?.custom_lists || [],
       sortBy: existing?.sort_by || 'default'
     });
@@ -351,9 +363,8 @@ app.get('/api/clear-cache', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`✅ Server ready at ${BASE_URL}`);
-  console.log(`💾 CACHE: 1 hour in-memory`);
-  console.log(`⚡ SPEED: Ultra fast (no TMDB calls)`);
-  console.log(`🎨 AIOMetadata will add: IT posters, descriptions, backgrounds`);
-  console.log(`📝 Install AIOMetadata AFTER this addon in Stremio!`);
-  console.log(`🚀 v11.0 AIOMETA COMPATIBLE\n`);
+  console.log(`💾 CACHE: 1 hour`);
+  console.log(`⚡ POSTERS: MetaHub (no API key needed)`);
+  console.log(`🎨 Compatible with AIOMetadata for enhanced details`);
+  console.log(`🚀 v11.1 FAST POSTERS\n`);
 });
